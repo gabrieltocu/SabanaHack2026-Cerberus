@@ -5,3 +5,4 @@
 *.onnx binary
 *.so binary
 *.png binary
+*.mp4 binary
