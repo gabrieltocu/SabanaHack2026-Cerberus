@@ -1,0 +1,9 @@
+{
+  "_nota": "Padron de socios SIMULADO. Clave = id del enrolamiento facial (vision/enroll.py --id).",
+  "sofia": {"nombre": "Sofía", "apellido": "Restrepo", "trato": "señora", "nivel": "VIP", "accion": "empresarial", "destino": "VIP"},
+  "carlos": {"nombre": "Carlos", "apellido": "Gómez", "trato": "señor", "nivel": "REGULAR", "accion": "familiar", "destino": null},
+  "andres": {"nombre": "Andrés", "apellido": "Azcona", "trato": "señor", "nivel": "REGULAR", "accion": "familiar", "destino": "REGULAR"},
+  "ricardo": {"nombre": "Ricardo", "apellido": "Mejía", "trato": "señor", "nivel": "VIP", "accion": "empresarial", "destino": "VIP"},
+  "valentina": {"nombre": "Valentina", "apellido": "Rojas", "trato": "señora", "nivel": "REGULAR", "accion": "familiar", "destino": null},
+  "mateo": {"nombre": "Mateo", "apellido": "Pardo", "trato": "señor", "nivel": "REGULAR", "accion": "individual", "destino": null}
+}

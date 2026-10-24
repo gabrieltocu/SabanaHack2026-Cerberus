@@ -1,0 +1,19 @@
+# Simulacion (MuJoCo + MjSpec) y vision (OpenCV con FaceDetectorYN / FaceRecognizerSF / QR)
+mujoco>=3.2
+numpy
+opencv-python>=4.8
+# OJO: no instalar opencv-python-headless al mismo tiempo: pisa a opencv-python y las ventanas
+# (enroll.py, live.py) fallan con "The function is not implemented". Solucion:
+#   pip uninstall -y opencv-python-headless opencv-python && pip install opencv-python
+# Solo para regenerar el modelo lite (tools/decimate_x2.py)
+scipy
+fast-simplification
+# Voz (hri/): hablar con la voz de Windows (SAPI) y escuchar con Whisper local
+comtypes
+sounddevice
+faster-whisper
+# X2 real (hri/voz_x2.py, en Linux/PC2): rclpy y aimdk_msgs vienen con el SDK del robot.
+# Plan B de voz en Linux: pip install piper-tts && python3 -m piper.download_voices es_MX-claude-high
+#   (en ~/piper; otra ruta con CERBERUS_PIPER=/ruta/modelo.onnx)
+# LLM del edecan (hri/llm.py): Amazon Bedrock, API Converse
+boto3

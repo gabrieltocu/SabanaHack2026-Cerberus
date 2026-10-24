@@ -1,0 +1,5 @@
+{
+  "_nota": "Turnos del personal del club (SIMULADO).",
+  "marta": {"nombre": "Marta", "apellido": "Ruiz", "trato": "señora", "area": "cocina", "inicio": "09:00", "fin": "17:00"},
+  "pablo": {"nombre": "Pablo", "apellido": "Torres", "trato": "señor", "area": "mesas", "inicio": "06:00", "fin": "09:00"}
+}

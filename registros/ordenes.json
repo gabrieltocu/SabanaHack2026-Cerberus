@@ -1,0 +1,6 @@
+{
+  "_nota": "Ordenes de trabajo de contratistas (SIMULADO).",
+  "OT-1042": {"persona": "luis", "nombre": "Luis", "apellido": "Peña", "trato": "señor", "empresa": "Climatec",
+              "motivo": "mantenimiento del aire acondicionado", "supervisor": "Jorge", "area": "mantenimiento",
+              "fecha": "2026-10-24", "lugar": "EXTERNO"}
+}

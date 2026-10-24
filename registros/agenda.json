@@ -1,0 +1,5 @@
+{
+  "_nota": "Invitados anunciados por un socio desde la app (SIMULADO). El invitado acepto el pre-registro.",
+  "laura": {"nombre": "Laura", "apellido": "Díaz", "trato": "señora", "anfitrion": "andres", "lugar": "INVITADO", "hora": "10:00", "fecha": "2026-10-24"},
+  "camila": {"nombre": "Camila", "apellido": "Rojas", "trato": "señora", "anfitrion": "sofia", "lugar": "INVITADO", "hora": "18:00", "fecha": "2026-10-25"}
+}
