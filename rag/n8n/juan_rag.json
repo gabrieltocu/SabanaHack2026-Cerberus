@@ -1,0 +1,383 @@
+{
+  "id": "JuanRAG000000001",
+  "name": "Juan RAG (DeepSeek local)",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "Ingesta",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "b1000000-0000-4000-8000-000000000001",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ingesta",
+        "responseMode": "lastNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "Un item por documento",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "fieldToSplitOut": "body.docs",
+        "options": {}
+      }
+    },
+    {
+      "id": "a1000000-0000-4000-8000-000000000003",
+      "name": "Guardar en memoria",
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreInMemory",
+      "typeVersion": 1.1,
+      "position": [
+        460,
+        0
+      ],
+      "parameters": {
+        "mode": "insert",
+        "memoryKey": "juan_club",
+        "clearStore": true
+      }
+    },
+    {
+      "id": "a1000000-0000-4000-8000-000000000004",
+      "name": "Cargar documento",
+      "type": "@n8n/n8n-nodes-langchain.documentDefaultDataLoader",
+      "typeVersion": 1,
+      "position": [
+        560,
+        220
+      ],
+      "parameters": {
+        "jsonMode": "expressionData",
+        "jsonData": "={{ $json.texto }}",
+        "options": {
+          "metadata": {
+            "metadataValues": [
+              {
+                "name": "fuente",
+                "value": "={{ $json.nombre }}"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "a1000000-0000-4000-8000-000000000005",
+      "name": "Partir en trozos",
+      "type": "@n8n/n8n-nodes-langchain.textSplitterRecursiveCharacterTextSplitter",
+      "typeVersion": 1,
+      "position": [
+        660,
+        420
+      ],
+      "parameters": {
+        "chunkSize": 220,
+        "chunkOverlap": 0,
+        "options": {}
+      }
+    },
+    {
+      "id": "a1000000-0000-4000-8000-000000000006",
+      "name": "Embeddings (ingesta)",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOllama",
+      "typeVersion": 1,
+      "position": [
+        400,
+        220
+      ],
+      "parameters": {
+        "model": "paraphrase-multilingual:latest"
+      },
+      "credentials": {
+        "ollamaApi": {
+          "id": "OllamaMac0000001",
+          "name": "Ollama del Mac"
+        }
+      }
+    },
+    {
+      "id": "a1000000-0000-4000-8000-000000000011",
+      "name": "Pregunta",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        700
+      ],
+      "webhookId": "b1000000-0000-4000-8000-000000000002",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "juan",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "a1000000-0000-4000-8000-000000000012",
+      "name": "Buscar en el club",
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreInMemory",
+      "typeVersion": 1.1,
+      "position": [
+        220,
+        700
+      ],
+      "alwaysOutputData": true,
+      "parameters": {
+        "mode": "load",
+        "memoryKey": "juan_club",
+        "prompt": "={{ $json.body.texto }}",
+        "topK": 2
+      }
+    },
+    {
+      "id": "a1000000-0000-4000-8000-000000000013",
+      "name": "Embeddings (pregunta)",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOllama",
+      "typeVersion": 1,
+      "position": [
+        220,
+        920
+      ],
+      "parameters": {
+        "model": "paraphrase-multilingual:latest"
+      },
+      "credentials": {
+        "ollamaApi": {
+          "id": "OllamaMac0000001",
+          "name": "Ollama del Mac"
+        }
+      }
+    },
+    {
+      "id": "a1000000-0000-4000-8000-000000000014",
+      "name": "Armar pedido",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        700
+      ],
+      "parameters": {
+        "jsCode": "// Prompt raw para juan-deepseek (DeepSeek R1 7B): las reglas de Juan (del Modelfile, via /api/show), ejemplos como\n// turnos (lo que mas ayuda a un modelo chico), <think> vacio (contesta de una, ~1 s) y el turno real con los 2 datos\n// del club que encontro el RAG y quien es el visitante.\nconst body = $('Pregunta').first().json.body || {};\nconst idiomas = { es: 'español de Colombia', en: 'English', zh: '简体中文', pt: 'português do Brasil' };\nconst v = body.visitante || {};\nconst quien = v.trato ? `Trato: ${v.trato}. Categoría: ${v.categoria || 'sin dato'}. Destino: ${v.destino || 'sin dato'}.`\n                      : 'No identificado: frases neutras, sin nombre.';\nconst trozos = $('Buscar en el club').all().map(i => i.json.document).filter(Boolean);\nconst datos = trozos.map(d => d.pageContent.replace(/^#+.*$/gm, '').replace(/\\s+/g, ' ').trim()).filter(Boolean);\nconst turno = (d, vis, idioma, frase) =>\n  `<｜User｜>DATOS: ${d.join(' ')}\\nVISITANTE: ${vis}\\nIDIOMA: ${idioma}\\nDICE: ${frase}<｜Assistant｜><think>\\n\\n</think>\\n\\n`;\nconst EJ = [\n  [['Los baños están en el lobby, junto a recepción.'], 'Trato: Laura. Categoría: invitado. Destino: sala de anfitriones.', 'español de Colombia', '¿Dónde están los baños?', 'Los baños están en el lobby, junto a recepción.'],\n  [['La red wifi se llama N Club Invitados; la clave se la da recepción.'], 'Trato: Laura. Categoría: invitado. Destino: sala de anfitriones.', 'español de Colombia', '¿Cuál es la clave del wifi?', 'La red se llama N Club Invitados; la clave se la dan en recepción con gusto.'],\n  [['Precios, menús, reservas, eventos, membresías y cualquier otro dato: en recepción le ayudan con gusto.'], 'Trato: Gabriel. Categoría: socio VIP. Destino: Lounge VIP.', 'español de Colombia', '¿Cuánto vale el almuerzo?', 'Eso no lo tengo, pero en recepción le ayudan con gusto.'],\n  [['El club tiene un lobby con recepción y luego un pasillo.'], 'Trato: Gabriel. Categoría: socio VIP. Destino: Lounge VIP.', 'español de Colombia', '¿Me lleva mejor al restaurante?', 'Eso se lo resuelven con gusto en recepción; por ahora seguimos hacia su destino.'],\n  [['El gimnasio está en el segundo piso; el ascensor queda a su izquierda.'], 'No identificado: frases neutras, sin nombre.', 'English', 'Is there a gym?', 'Yes, the gym is on the second floor; the elevator is on your left.'],\n  [['Precios, menús, reservas, eventos, membresías y cualquier otro dato: en recepción le ayudan con gusto.'], 'Trato: Laura. Categoría: invitado. Destino: sala de anfitriones.', 'español de Colombia', '¿Me puede traer un vaso de agua?', 'Eso no está a mi cargo, pero en recepción le ayudan con gusto.'],\n  [['Precios, menús, reservas, eventos, membresías y cualquier otro dato: en recepción le ayudan con gusto.'], 'Trato: Gabriel. Categoría: socio VIP. Destino: Lounge VIP.', 'español de Colombia', '¿Puedo entrar con mi bicicleta?', 'Eso se lo confirman con gusto en recepción.'],\n  [['(ninguno)'], 'Trato: Gabriel. Categoría: socio VIP. Destino: Lounge VIP.', 'español de Colombia', '¿Cómo estás, Juan?', 'De maravilla, Gabriel, y mejor ahora que tengo tan buena compañía. ¿En qué le puedo servir?'],\n  [['(ninguno)'], 'Trato: Laura. Categoría: invitado. Destino: sala de anfitriones.', 'español de Colombia', 'Cuéntame un chiste', '¿Sabe por qué los robots somos buenos anfitriones? Porque nunca perdemos la compostura, solo la batería.'],\n  [['(ninguno)'], 'No identificado: frases neutras, sin nombre.', 'English', 'Tell me a fun fact', 'Did you know octopuses have three hearts? I only have one, and it is made of silicon.'],\n  [['(ninguno)'], 'Trato: Gabriel. Categoría: socio VIP. Destino: Lounge VIP.', 'español de Colombia', '¿Quién eres?', 'Soy Juan, el robot anfitrión de N Club; un placer acompañarle.'],\n];\nconst ejemplos = EJ.map(([d, vis, i, q, a]) => turno(d, vis, i, q) + a + '<｜end▁of▁sentence｜>').join('');\nconst PIDE = { chiste: ' (Pide un chiste: cuéntale uno corto, limpio, elegante y nuevo.)',\n               curioso: ' (Pide un dato curioso: cuéntale uno corto, cierto y sorprendente.)' };\nconst frase = String(body.texto || '').slice(0, 500) + (PIDE[body.modo] || '');\nreturn [{ json: {\n  fuentes: [...new Set(trozos.map(d => (d.metadata || {}).fuente).filter(Boolean))],\n  pedido: {\n    model: 'juan-deepseek', raw: true, stream: false, keep_alive: '30m',\n    options: { temperature: body.modo ? 0.9 : 0.4, num_predict: 80, seed: Math.floor(Math.random() * 1e6) },\n    prompt: '<｜begin▁of▁sentence｜>' + ($('Reglas de Juan').first().json.system || '') + ejemplos\n            + turno(datos.length ? datos : ['(ninguno)'], quien, idiomas[body.idioma] || idiomas.es, frase),\n  },\n} }];"
+      }
+    },
+    {
+      "id": "a1000000-0000-4000-8000-000000000015",
+      "name": "DeepSeek (juan-deepseek)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        900,
+        700
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:11434/api/generate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.pedido) }}",
+        "options": {
+          "timeout": 45000
+        }
+      }
+    },
+    {
+      "id": "a1000000-0000-4000-8000-000000000016",
+      "name": "Limpiar respuesta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        700
+      ],
+      "parameters": {
+        "jsCode": "// Es voz: una frase limpia. Lo que el modelo agregue despues (notas, otra frase, otro dato) se corta; si no queda\n// nada, la frase de recepcion en el idioma del visitante.\nconst idioma = ($('Pregunta').first().json.body || {}).idioma;\nconst RECEPCION = { es: 'Eso no lo tengo, pero en recepción le ayudan con gusto.', en: 'I do not have that, but reception will gladly help you.',\n                    zh: '这个我不清楚，前台会很乐意帮助您。', pt: 'Isso eu não sei, mas a recepção ajuda você com prazer.' };\nlet t = String($input.first().json.response || '');\nt = t.replace(/<think>[\\s\\S]*?<\\/think>/g, '').replace(/<\\/?think>/g, '').trim();\nt = t.split(/\\n\\s*\\n|\\n-{3,}|\\*\\*Nota/)[0];\nt = t.replace(/^\\s*(Juan|Respuesta)\\s*:\\s*/i, '').replace(/[*#`_>\"“”«»()\\[\\]]/g, '').replace(/\\p{Extended_Pictographic}/gu, '');\nt = t.replace(/\\s+/g, ' ').trim();\nconst primera = (t.match(/^([^.!?。！？]+[.!?。！？]+){1}/) || [t])[0].trim();   // una frase: Juan escucha mas de lo que habla (los chistes salen del banco)\nreturn [{ json: { respuesta: primera || RECEPCION[idioma] || RECEPCION.es, fuentes: $('Armar pedido').first().json.fuentes } }];"
+      }
+    },
+    {
+      "id": "a1000000-0000-4000-8000-000000000017",
+      "name": "Responder",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1340,
+        700
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "a1000000-0000-4000-8000-000000000018",
+      "name": "Reglas de Juan",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        460,
+        700
+      ],
+      "executeOnce": true,
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:11434/api/show",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"model\": \"juan-deepseek\"}",
+        "options": {
+          "timeout": 10000
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Ingesta": {
+      "main": [
+        [
+          {
+            "node": "Un item por documento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Un item por documento": {
+      "main": [
+        [
+          {
+            "node": "Guardar en memoria",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cargar documento": {
+      "ai_document": [
+        [
+          {
+            "node": "Guardar en memoria",
+            "type": "ai_document",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Partir en trozos": {
+      "ai_textSplitter": [
+        [
+          {
+            "node": "Cargar documento",
+            "type": "ai_textSplitter",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings (ingesta)": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Guardar en memoria",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pregunta": {
+      "main": [
+        [
+          {
+            "node": "Buscar en el club",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings (pregunta)": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Buscar en el club",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar en el club": {
+      "main": [
+        [
+          {
+            "node": "Reglas de Juan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Armar pedido": {
+      "main": [
+        [
+          {
+            "node": "DeepSeek (juan-deepseek)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DeepSeek (juan-deepseek)": {
+      "main": [
+        [
+          {
+            "node": "Limpiar respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Limpiar respuesta": {
+      "main": [
+        [
+          {
+            "node": "Responder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reglas de Juan": {
+      "main": [
+        [
+          {
+            "node": "Armar pedido",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

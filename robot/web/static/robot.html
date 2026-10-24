@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cerberus · Robot X2</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/comun.css?v=2">
+<style>
+  .cams { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+  .cam { position: relative; background: #000; border-radius: 10px; overflow: hidden; aspect-ratio: 16 / 9; }
+  .cam img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .cam .tag { position: absolute; left: 8px; top: 8px; background: rgba(0,0,0,.65); color: #fff; padding: 2px 8px; border-radius: 6px; font-size: 12px; }
+  .cam .tag.viejo { background: var(--bad); }
+  .pasos { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .pasos button { padding: 8px 10px; font-size: 14px; }
+  #log { height: 420px; overflow: auto; margin: 0; padding: 10px; background: #0d0f13; color: #d6dae0; border-radius: 8px;
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+  .entrada { display: flex; gap: 8px; margin-top: 8px; }
+  .entrada input { flex: 1; }
+  .side { display: flex; flex-direction: column; gap: 16px; }
+  .luces { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 12px 20px 0; max-width: 1500px; margin: 0 auto; }
+  .luz { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
+  .luz i { width: 11px; height: 11px; border-radius: 50%; background: var(--muted); flex: none; }
+  #pararTodo { width: 100%; padding: 22px; font-size: 24px; font-weight: 800; letter-spacing: .04em; background: #d0021b;
+    color: #fff; border: 0; border-radius: 12px; cursor: pointer; box-shadow: 0 4px 14px rgba(208,2,27,.45); }
+  #pararTodo:hover { background: #a80016; } #pararTodo:focus-visible { outline: 4px solid #ffd400; outline-offset: 2px; }
+  .tel { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .tel div { background: var(--bg, #f4f5f7); border-radius: 8px; padding: 8px 10px; }
+  .tel b { display: block; font-size: 20px; } .tel span { font-size: 12px; } .tel .bad b { color: var(--bad); }
+  #batBaja { margin: 0 0 8px; }
+  .cruz { display: grid; grid-template-columns: repeat(3, 64px); gap: 6px; justify-content: center; margin-top: 10px; }
+  .cruz button { height: 56px; font-size: 22px; touch-action: none; user-select: none; }
+  .luz.ok i { background: var(--ok); box-shadow: 0 0 6px var(--ok); } .luz.bad i { background: var(--bad); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Cerberus</h1>
+  <nav><a href="/captura" data-i18n="nav.captura"></a><a href="/identificar" data-i18n="nav.identificar"></a><a href="/roles" data-i18n="nav.roles"></a><a class="on" href="/robot" data-i18n="nav.robot"></a><a href="/llm" data-i18n="nav.llm"></a><a href="/docs" target="_blank" data-i18n="nav.api"></a></nav>
+  <div class="tools" id="tools"></div>
+</header>
+<div id="luces" class="luces" aria-live="polite"></div>
+<main>
+  <div class="side">
+    <div class="panel">
+      <h2 data-i18n="rob.camaras"></h2>
+      <div id="cams" class="cams"></div>
+      <p id="sinCam" class="muted" data-i18n="rob.sin_cam"></p>
+    </div>
+    <div class="panel">
+      <h2 data-i18n="rob.decisiones"></h2>
+      <div class="scroll"><table>
+        <thead><tr><th data-i18n="th.hora"></th><th data-i18n="th.persona"></th><th data-i18n="th.rol"></th><th data-i18n="th.conf"></th></tr></thead>
+        <tbody id="regs"></tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="side">
+    <button id="pararTodo" data-i18n="rob.parar_todo"></button>
+    <div class="panel">
+      <h2 data-i18n="tel.titulo"></h2>
+      <div id="batBaja" class="msg bad" role="alert" hidden data-i18n="tel.baja"></div>
+      <div id="tel" class="tel" aria-live="polite"></div>
+      <p id="telEdad" class="muted small"></p>
+    </div>
+    <div class="panel">
+      <h2 data-i18n="cam.titulo"></h2>
+      <p class="muted small" data-i18n="cam.ayuda"></p>
+      <div class="row">
+        <label for="metros" style="align-self:center"><span data-i18n="cam.metros"></span></label>
+        <input id="metros" type="number" min="0.1" max="5" step="0.1" value="3" style="width:90px">
+        <button id="camAuto" data-i18n="cam.auto"></button>
+        <button id="camManual" class="secondary" data-i18n="cam.manual"></button>
+        <button id="camParar" class="secondary" data-i18n="rob.detener"></button>
+      </div>
+      <div id="cruz" class="cruz" hidden>
+        <span></span><button data-k="w" aria-label="↑">▲</button><span></span>
+        <button data-k="a" aria-label="↺">◀</button><span></span><button data-k="d" aria-label="↻">▶</button>
+        <span></span><button data-k="s" aria-label="↓">▼</button><span></span>
+      </div>
+      <p id="camEstado" class="muted small" aria-live="polite"></p>
+    </div>
+    <div class="panel">
+      <h2 data-i18n="rob.pasos"></h2>
+      <p class="muted small" data-i18n="rob.ayuda"></p>
+      <div id="pasos" class="pasos"></div>
+      <div class="row"><button id="detener" class="secondary" data-i18n="rob.detener"></button>
+        <button id="limpiar" class="secondary" data-i18n="rob.limpiar"></button>
+        <span id="estado" class="muted small" aria-live="polite" style="align-self:center"></span></div>
+    </div>
+    <div class="panel">
+      <h2 data-i18n="rob.log"></h2>
+      <pre id="log" aria-live="polite"></pre>
+      <form id="entrada" class="entrada">
+        <input id="texto" type="password" autocomplete="off" data-i18n-ph="rob.entrada" aria-label="ssh / sudo">
+        <button data-i18n="rob.enviar"></button>
+      </form>
+      <div id="out" class="msg bad" hidden></div>
+    </div>
+  </div>
+</main>
+<div id="activar" class="banner" hidden data-i18n="voz.activar"></div>
+<div id="vozOut" hidden></div>
+<script src="/static/i18n.js?v=7"></script>
+<script src="/static/comun.js?v=2"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+let N = 0, ESTADO = {};
+
+function error(e) { $('out').hidden = !e; $('out').textContent = e ? e.message || e : ''; }
+
+let LUCES = [];
+function pintarLuces() {
+  $('luces').innerHTML = LUCES.map((l) => `<span class="luz ${l.ok ? 'ok' : 'bad'}" title="${esc(l.detalle)}"><i></i>${esc(t('luz.' + l.id))}<span class="sr-only">: ${l.ok ? 'OK' : '✗'}</span></span>`).join('');
+}
+async function luces() {
+  try { LUCES = await api('GET', '/api/robot/conexion'); pintarLuces(); }
+  catch (e) { LUCES = LUCES.map((l) => ({...l, ok: false})); pintarLuces(); }   // el cerebro no responde: todo en rojo
+  setTimeout(luces, 4000);
+}
+
+function pintarPasos() {
+  $('pasos').innerHTML = (ESTADO.acciones || []).map((a) =>
+    `<button data-a="${esc(a)}" class="${a === 'recepcion' ? '' : 'secondary'}" ${ESTADO.corriendo ? 'disabled' : ''}>${esc(t('rob.' + a))}</button>`).join('');
+  $('detener').disabled = !ESTADO.corriendo;
+  $('estado').textContent = ESTADO.corriendo ? t('rob.corriendo', {a: t('rob.' + ESTADO.accion)}) : t('rob.libre');
+}
+
+async function estado() {
+  try {
+    const r = await api('GET', `/api/robot/estado?desde=${N}`);
+    const abajo = $('log').scrollTop + $('log').clientHeight >= $('log').scrollHeight - 20;
+    if (r.lineas.length) $('log').dataset.txt = ($('log').dataset.txt || '') + r.lineas.join('\n') + '\n';
+    $('log').textContent = ($('log').dataset.txt || '') + r.parcial;
+    if (abajo) $('log').scrollTop = $('log').scrollHeight;
+    const cambio = r.corriendo !== ESTADO.corriendo || !ESTADO.acciones;
+    N = r.n; ESTADO = r;
+    if (cambio) pintarPasos();
+  } catch (e) { error(e); }
+}
+
+async function camaras() {
+  try {
+    const cams = await api('GET', '/api/camaras');
+    $('sinCam').hidden = cams.length > 0;
+    for (const c of cams) {
+      let el = document.querySelector(`.cam[data-c="${CSS.escape(c.camara)}"]`);
+      if (!el) {
+        el = document.createElement('div'); el.className = 'cam'; el.dataset.c = c.camara;
+        el.innerHTML = `<img alt="${esc(c.camara)}"><span class="tag"></span>`;
+        $('cams').append(el);
+      }
+      const img = el.querySelector('img');
+      if (!img.dataset.vivo) {          // MJPEG: un solo pedido y el servidor empuja cada frame; si se corta, se reabre
+        img.dataset.vivo = '1';
+        img.onerror = () => { delete img.dataset.vivo; };
+        img.src = `/api/camaras/${encodeURIComponent(c.camara)}.mjpg?t=${Date.now()}`;
+      }
+      const d = c.decision, quien = c.caras.map((f) => f.nombre || '?').join(', ');
+      const tag = el.querySelector('.tag');
+      tag.className = 'tag' + (c.edad_s > 5 ? ' viejo' : '');
+      tag.textContent = `${c.camara} · ${t('rob.hace', {s: Math.round(c.edad_s)})} · ${t('rob.caras', {n: c.caras.length})}`
+        + (quien ? ` (${quien})` : '') + (d?.rol ? ` → ${rolName(d.rol)}` : '');
+    }
+  } catch (e) { error(e); }
+}
+
+async function registros() {
+  try {
+    const rows = await api('GET', '/api/registros?limit=15');
+    $('regs').innerHTML = rows.map((r) => `<tr><td>${esc((r.fecha || '').slice(11, 19))}</td><td>${esc(r.nombre || r.estado)}<br><span class="muted small">${esc(r.camara)}</span></td>
+      <td><span class="badge" style="background:${rolColor(r.rol)}">${esc(r.rol ? rolName(r.rol) : r.estado)}</span></td><td>${r.confianza == null ? '' : Math.round(r.confianza * 100) + ' %'}</td></tr>`).join('');
+  } catch (e) { error(e); }
+}
+
+$('pasos').addEventListener('click', async (e) => {
+  const a = e.target.closest('button')?.dataset.a;
+  if (!a) return;
+  try { error(); ESTADO = await api('POST', `/api/robot/${a}`); pintarPasos(); estado(); } catch (err) { error(err); }
+});
+$('detener').onclick = async () => { try { await api('POST', '/api/robot/detener'); estado(); } catch (err) { error(err); } };
+$('pararTodo').onclick = async () => {
+  $('pararTodo').disabled = true;
+  try { error(); ESTADO = await api('POST', '/api/robot/parar_todo'); pintarPasos(); estado(); } catch (err) { error(err); }
+  $('pararTodo').disabled = false;
+};
+$('limpiar').onclick = () => { $('log').dataset.txt = ''; $('log').textContent = ''; };
+$('entrada').onsubmit = async (e) => {
+  e.preventDefault();
+  try { error(); await api('POST', '/api/robot/entrada', {texto: $('texto').value}); $('texto').value = ''; } catch (err) { error(err); }
+};
+
+// Estado del robot (/api/robot/telemetria, el cliente del X2 lo manda cada 5 s): codigos de AimDK v1.1.0
+const FSM = {0: '?', 1: 'STARTING', 2: 'STABLE', 3: 'MOVING', 4: 'SAFE', 5: 'SPECIAL', 6: 'TEST'};
+let TEL = {};
+function pintarTel() {
+  const d = TEL, n = (v, u = '') => v == null ? '—' : `${v}${u}`;
+  const viejo = d.edad_s == null || d.edad_s > 15;
+  const tiles = [
+    [t('tel.bateria'), n(d.bateria_pct, ' %'), `${d.cargando ? '⚡ ' + t('tel.cargando') : t('tel.descargando')} · ${n(d.bateria_v, ' V')} · ${n(d.bateria_a, ' A')}`, d.bateria_pct < 20 || d.bms_bits > 0],
+    [t('tel.bat_temp'), n(d.bateria_c, ' °C'), `${t('tel.ciclos')}: ${n(d.ciclos)} · ${n(d.bateria_w, ' W')}`, d.bateria_c > 50],
+    [t('tel.movimiento'), d.accion == null ? '—' : t('acc.' + d.accion), `FSM ${FSM[d.fsm] ?? n(d.fsm)}`, d.accion === 2],
+    [t('tel.sistema'), n(d.sistema_txt), `${t('tel.alertas')}: ${(d.alertas || []).join(', ') || t('tel.ninguna')}`, (d.alertas || []).length > 0],
+    ['Orin', n(d.orin_c, ' °C'), `RAM ${n(d.ram_pct, ' %')} · ${t('tel.disco')} ${n(d.disco_libre_gb, ' GB')} · ${t('tel.carga')} ${n(d.carga)}`, d.orin_c > 85 || d.ram_pct > 90],
+    [t('tel.pmu'), n(d.pmu_c, ' °C'), `${t('tel.ventilador')} ${n(d.ventilador_pct, ' %')} · ${t('tel.encendido')} ${n(d.encendido_h, ' h')}`, d.pmu_c > 70],
+    [t('tel.microfonos'), d.microfono_s == null ? '—' : d.microfono_s < 3 ? '🎤 OK' : '✗', d.microfono_s == null ? '' : t('rob.hace', {s: Math.round(d.microfono_s)}), !(d.microfono_s < 3)],
+    [t('tel.voz'), d.dns ? 'OK' : '✗', t('tel.voz_d'), !d.dns],
+  ];
+  $('tel').innerHTML = tiles.map(([k, v, sub, mal]) => `<div class="${mal && !viejo ? 'bad' : ''}"><span>${esc(k)}</span><b>${esc(v)}</b><span class="muted">${esc(sub)}</span></div>`).join('');
+  $('batBaja').hidden = !(d.bateria_pct < 20) || viejo;
+  $('telEdad').textContent = d.edad_s == null ? t('tel.sin_datos') : t('tel.actualizado', {s: Math.round(d.edad_s)}) + (viejo ? ' ⚠' : '');
+}
+async function telemetria() {
+  try { TEL = await api('GET', '/api/robot/telemetria'); } catch (e) { TEL = {}; }
+  pintarTel();
+}
+
+// Caminar: automatico = N metros derecho; manual = mantener una flecha (cada orden dura 0.4 s en el robot)
+let CAMINANDO = false, MANUAL = false;
+function pintarCaminar() {
+  $('camAuto').disabled = $('camManual').disabled = CAMINANDO;
+  $('camParar').disabled = !CAMINANDO;
+  $('cruz').hidden = !(CAMINANDO && MANUAL);
+  $('camEstado').textContent = CAMINANDO ? t(MANUAL ? 'cam.en_manual' : 'cam.caminando') : t('rob.libre');
+}
+async function caminarEstado() {
+  try { CAMINANDO = (await api('GET', '/api/robot/caminar')).caminando; } catch (e) { CAMINANDO = false; }
+  if (!CAMINANDO) MANUAL = false;
+  pintarCaminar();
+}
+async function caminar(manual) {
+  const metros = parseFloat($('metros').value);
+  if (!manual && !confirm(t('cam.confirmar', {m: metros}))) return;
+  try { error(); MANUAL = manual; CAMINANDO = (await api('POST', '/api/robot/caminar', {metros, manual})).caminando; } catch (err) { error(err); }
+  pintarCaminar();
+}
+$('camAuto').onclick = () => caminar(false);
+$('camManual').onclick = () => caminar(true);
+$('camParar').onclick = async () => { try { await api('POST', '/api/robot/caminar/parar'); } catch (err) { error(err); } caminarEstado(); };
+let tecla = null;
+const enviar = (k) => api('POST', '/api/robot/caminar/tecla', {tecla: k}).catch(error);
+function soltar() { clearInterval(tecla); tecla = null; }
+$('cruz').addEventListener('pointerdown', (e) => {
+  const k = e.target.closest('button')?.dataset.k;
+  if (!k) return;
+  e.target.setPointerCapture?.(e.pointerId);
+  soltar(); enviar(k); tecla = setInterval(() => enviar(k), 150);
+});
+['pointerup', 'pointercancel', 'lostpointercapture'].forEach((ev) => $('cruz').addEventListener(ev, soltar));
+$('cruz').addEventListener('keydown', (e) => {          // teclado: Enter/Espacio sostenido repite solo
+  const k = e.target.closest('button')?.dataset.k;
+  if (k && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); enviar(k); }
+});
+window.addEventListener('blur', soltar);
+
+initComun();
+langListeners.push(pintarCaminar, pintarPasos, registros, pintarLuces, pintarTel);
+estado(); camaras(); registros(); luces(); telemetria(); setInterval(telemetria, 3000);
+setInterval(estado, 700); caminarEstado(); setInterval(caminarEstado, 1500); setInterval(camaras, 1000); setInterval(registros, 3000);
+</script>
+</body>
+</html>

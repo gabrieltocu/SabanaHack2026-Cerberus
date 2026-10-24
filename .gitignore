@@ -1,0 +1,9 @@
+.DS_Store
+__pycache__/
+*.pyc
+# >100 MB (limite de GitHub): binarios publicos de Ollama para el Orin
+rag/robot_llm/*.tar.zst
+# Estado local de n8n (base de datos, clave de cifrado, logs): se crea al correr rag.sh
+rag/n8n/datos/
+# SDK de AgiBot compilado: es del fabricante, no se redistribuye
+robot/robot_sdk/*.tgz

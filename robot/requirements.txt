@@ -1,0 +1,24 @@
+# Cerberus (robotA + robotB). Python 3.10 = el mismo del host del X2 (Ubuntu 22.04 + ROS 2 Humble).
+# Mac:    conda env create -f environment.yml && conda activate cerberus
+# Ubuntu: python3 -m pip install -r requirements.txt   (ROS 2 Humble y aimdk_msgs van aparte, ver README §5.1)
+# Versiones exactas probadas: requirements-lock.txt
+
+# Vision: YuNet + SFace + lectura y generacion de QR (cv2.QRCodeDetectorAruco / QRCodeEncoder)
+opencv-python>=4.10,<5      # NO instalar opencv-python-headless ni opencv-contrib-python a la vez: pisan cv2
+numpy>=1.26,<2.3            # numpy 2.3+ ya no soporta Python 3.10
+# Detector YOLO-face (trae torch y torchvision; en Mac M usa MPS)
+ultralytics>=8.3
+# Simulacion del club (robotA/sim) y modelo lite del X2 (robotA/tools/decimate_x2.py)
+mujoco>=3.2
+scipy
+fast-simplification
+# API y paginas web (web/app.py): captura, identificacion con log, confirmacion y pases QR
+pillow                      # dibuja los pases QR (PNG y PDF); ya viene con ultralytics
+zxing-cpp                   # lee el PDF417 del reverso de la cedula amarilla (y QR)
+pyobjc-framework-Vision; sys_platform == "darwin"   # OCR de Apple para el numero de la cedula digital (solo Mac)
+fastapi>=0.115
+uvicorn>=0.30
+httpx                       # solo para web/test_api.py (TestClient)
+faster-whisper              # voz: Whisper local (detecta es/en/zh/pt y transcribe); el modelo small se baja solo (~460 MB)
+av<18                       # PyAV 18+ rompe faster-whisper 1.2 al abrir el audio: open() got an unexpected
+                            # keyword argument 'metadata_errors'. Version probada: av 17.1 (requirements-lock.txt)

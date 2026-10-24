@@ -1,0 +1,7 @@
+{
+  "cos_reject": 0.438,
+  "cos_sure": 0.584,
+  "fuente": "../../datasets/lfw",
+  "personas": 40,
+  "top1": 0.9989
+}

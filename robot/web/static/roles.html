@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cerberus · Roles</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/comun.css?v=2">
+<style>
+  .roles { max-width: 1300px; margin: 0 auto; padding: 16px 20px; }
+  .roles td { vertical-align: middle; }
+  .roles input, .roles select { padding: 6px 8px; font-size: 14px; }
+  .roles .inv { display: flex; flex-direction: column; gap: 4px; min-width: 160px; }
+  .roles .acts { display: flex; gap: 6px; flex-wrap: wrap; }
+  .roles .acts button { padding: 6px 10px; font-size: 13px; }
+  @media (max-width: 900px) { .roles .scroll { overflow-x: auto; } .roles table { min-width: 860px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Cerberus</h1>
+  <nav><a href="/captura" data-i18n="nav.captura"></a><a href="/identificar" data-i18n="nav.identificar"></a><a class="on" href="/roles" data-i18n="nav.roles"></a><a href="/robot" data-i18n="nav.robot"></a><a href="/llm" data-i18n="nav.llm"></a><a href="/docs" target="_blank" data-i18n="nav.api"></a></nav>
+  <div class="tools" id="tools"></div>
+</header>
+<div class="roles">
+  <div class="panel">
+    <h2 data-i18n="adm.titulo"></h2>
+    <p class="muted" data-i18n="adm.ayuda"></p>
+    <div class="scroll" style="max-height:none"><table>
+      <thead><tr><th data-i18n="adm.nombre"></th><th data-i18n="th.rol"></th><th data-i18n="th.cedula"></th>
+        <th data-i18n="adm.invitacion"></th><th data-i18n="adm.fotos"></th><th></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table></div>
+    <div id="out" class="msg" hidden aria-live="polite"></div>
+  </div>
+</div>
+<div id="activar" class="banner" hidden data-i18n="voz.activar"></div>
+<div id="vozOut" hidden></div>
+<script src="/static/i18n.js?v=6"></script>
+<script src="/static/comun.js?v=2"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const ROLES = ['VIP', 'REGULAR', 'INVITADO', 'PERSONAL', 'EXTERNO'];
+let PEOPLE = [];
+
+function show(text, kind) { $('out').hidden = false; $('out').textContent = text; $('out').className = 'msg ' + (kind || ''); }
+
+async function cargar() {
+  PEOPLE = await api('GET', '/api/personas');
+  const hosts = PEOPLE.filter((p) => p.rol === 'VIP' || p.rol === 'REGULAR');
+  $('rows').innerHTML = PEOPLE.map((p) => {
+    const host = (hosts.find((h) => h.nombre === p.anfitrion) || {}).id || '';
+    return `<tr data-id="${esc(p.id)}">
+      <td><input class="f-nombre" value="${esc(p.nombre)}" aria-label="${esc(t('adm.nombre'))}"><br><span class="muted small">${esc(p.id)}</span></td>
+      <td><select class="f-rol" aria-label="${esc(t('th.rol'))}">${ROLES.map((r) => `<option value="${r}" ${r === p.rol ? 'selected' : ''}>${esc(rolName(r))}</option>`).join('')}</select></td>
+      <td><input class="f-ced" inputmode="numeric" placeholder="${esc(p.cedula ? t('adm.ced_ph', {c: p.cedula}) : '1012345678')}" aria-label="${esc(t('th.cedula'))}"></td>
+      <td><div class="inv" ${p.rol === 'INVITADO' ? '' : 'hidden'}>
+        <select class="f-host" aria-label="${esc(t('inv.anfitrion'))}">${hosts.map((h) => `<option value="${esc(h.id)}" ${h.id === host ? 'selected' : ''}>${esc(h.nombre)}</option>`).join('')}</select>
+        <input class="f-hasta" type="date" value="${esc((p.valido_hasta || '').slice(0, 10))}" aria-label="${esc(t('inv.hasta'))}">
+        ${p.vencida ? `<span class="badge" style="background:${rolColor('ESCALAMIENTO')}">${esc(t('inv.vencida'))}</span>` : ''}</div></td>
+      <td class="muted">${p.enrolamiento}/15 · ${p.validacion}/8</td>
+      <td><div class="acts"><button class="b-save">${esc(t('adm.guardar'))}</button>
+        <a href="/api/pases/${encodeURIComponent(p.id)}.png" target="_blank"><button class="secondary">${esc(t('adm.pase'))}</button></a>
+        <button class="danger b-del">${esc(t('cap.borrar'))}</button></div></td></tr>`;
+  }).join('') || `<tr><td colspan="6" class="muted">${esc(t('cap.nadie'))}</td></tr>`;
+}
+
+$('rows').addEventListener('change', (e) => {   // el anfitrion y la vigencia solo aplican a invitados
+  if (e.target.classList.contains('f-rol')) e.target.closest('tr').querySelector('.inv').hidden = e.target.value !== 'INVITADO';
+});
+$('rows').addEventListener('click', async (e) => {
+  const tr = e.target.closest('tr'), id = tr?.dataset.id;
+  if (!id) return;
+  if (e.target.classList.contains('b-del')) {
+    if (confirm(t('cap.confirm_borrar', {id}))) { await api('DELETE', `/api/personas/${encodeURIComponent(id)}`); cargar(); }
+    return;
+  }
+  if (!e.target.classList.contains('b-save')) return;
+  const q = (c) => tr.querySelector(c).value;
+  const body = {nombre: q('.f-nombre').trim(), rol: q('.f-rol'), cedula: q('.f-ced')};
+  if (body.rol === 'INVITADO') { body.anfitrion = q('.f-host'); body.valido_hasta = q('.f-hasta'); }
+  try {
+    const r = await api('PUT', `/api/personas/${encodeURIComponent(id)}`, body);
+    show(t('adm.ok', {txt: `${r.nombre} · ${rolName(r.rol)}${r.cedula ? ' · ' + r.cedula : ''}${r.anfitrion ? ' · ' + t('inv.de', {a: r.anfitrion}) : ''}`}), 'ok');
+    cargar();
+  } catch (err) { show(err.message, 'bad'); }
+});
+
+initComun();
+langListeners.push(cargar);
+cargar();
+</script>
+</body>
+</html>

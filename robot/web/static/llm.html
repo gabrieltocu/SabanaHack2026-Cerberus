@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cerberus · LLM</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/comun.css?v=2">
+<style>
+  .modo { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .modo button { padding: 18px 12px; font-size: 16px; background: transparent; color: var(--text); border: 2px solid var(--line); }
+  .modo button[aria-checked="true"] { border-color: var(--accent); background: var(--accent); color: #fff; }
+  .modo small { display: block; font-weight: 400; font-size: 12px; opacity: .85; margin-top: 4px; }
+  .luces { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 14px; }
+  .luz { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
+  .luz i { width: 11px; height: 11px; border-radius: 50%; background: var(--bad); flex: none; }
+  .luz.ok i { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  .side { display: flex; flex-direction: column; gap: 16px; }
+  .entrada { display: flex; gap: 8px; } .entrada input { flex: 1; }
+  .charla { display: flex; flex-direction: column; gap: 6px; max-height: 640px; overflow: auto; }
+  .charla div { padding: 6px 10px; border-radius: 10px; max-width: 85%; }
+  .charla .visitante { align-self: flex-start; background: var(--line); }
+  .charla .juan { align-self: flex-end; background: var(--accent, #3b6cff); color: #fff; }
+  .charla .ignorado { opacity: .5; }
+  .charla small { display: block; font-size: 11px; opacity: .75; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Cerberus</h1>
+  <nav><a href="/captura" data-i18n="nav.captura"></a><a href="/identificar" data-i18n="nav.identificar"></a><a href="/roles" data-i18n="nav.roles"></a><a href="/robot" data-i18n="nav.robot"></a><a class="on" href="/llm" data-i18n="nav.llm"></a><a href="/docs" target="_blank" data-i18n="nav.api"></a></nav>
+  <div class="tools" id="tools"></div>
+</header>
+<main>
+  <div class="side">
+    <div class="panel">
+      <h2 id="modoTit" data-i18n="llm.modo"></h2>
+      <div class="modo" role="radiogroup" aria-labelledby="modoTit">
+        <button role="radio" data-activo="1"><span data-i18n="llm.rag"></span><small data-i18n="llm.rag_d"></small></button>
+        <button role="radio" data-activo="0"><span data-i18n="llm.clasico"></span><small data-i18n="llm.clasico_d"></small></button>
+      </div>
+      <div id="luces" class="luces" aria-live="polite"></div>
+    </div>
+    <div class="panel">
+      <h2 data-i18n="llm.probar"></h2>
+      <form id="form" class="entrada">
+        <input id="texto" autocomplete="off" data-i18n-ph="llm.ph" aria-label="pregunta">
+        <button id="enviar" data-i18n="llm.preguntar"></button>
+      </form>
+      <div id="resp" class="msg" hidden aria-live="polite"></div>
+      <div class="row"><button id="recargar" class="secondary" data-i18n="llm.recargar"></button>
+        <span id="recargado" class="muted small" aria-live="polite" style="align-self:center"></span></div>
+    </div>
+  </div>
+  <div class="panel">
+    <h2 data-i18n="llm.vivo"></h2>
+    <p class="muted small" data-i18n="llm.vivo_d"></p>
+    <div id="charla" class="charla" aria-live="polite"></div>
+  </div>
+  <div class="panel">
+    <h2 data-i18n="llm.historial"></h2>
+    <div class="scroll" style="max-height: 640px"><table>
+      <thead><tr><th data-i18n="th.hora"></th><th data-i18n="llm.th_pregunta"></th><th data-i18n="llm.th_respuesta"></th></tr></thead>
+      <tbody id="hist"></tbody>
+    </table></div>
+  </div>
+</main>
+<div id="out" class="msg bad" hidden style="margin: 0 20px"></div>
+<div id="activar" class="banner" hidden data-i18n="voz.activar"></div>
+<div id="vozOut" hidden></div>
+<script src="/static/i18n.js?v=6"></script>
+<script src="/static/comun.js?v=2"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+let E = {};
+function error(e) { $('out').hidden = !e; $('out').textContent = e ? e.message || e : ''; }
+
+function pintar() {
+  document.querySelectorAll('.modo button').forEach((b) => b.setAttribute('aria-checked', String((b.dataset.activo === '1') === !!E.activo)));
+  const luz = (ok, k) => `<span class="luz ${ok ? 'ok' : ''}"><i></i>${esc(t(k))}<span class="sr-only">: ${ok ? 'OK' : '✗'}</span></span>`;
+  $('luces').innerHTML = luz(E.n8n, 'llm.n8n') + luz(E.modelo, 'llm.modelo');
+  $('hist').innerHTML = (E.historial || []).map((h) => `<tr><td>${esc(h.hora)}<br><span class="muted small">${h.ms} ms</span></td>
+    <td>${esc(h.texto)}</td><td>${esc(h.respuesta || '—')}<br><span class="muted small">${esc(h.fuente)}${h.documentos?.length ? ' · ' + esc(h.documentos.join(', ')) : ''}</span></td></tr>`).join('');
+  $('charla').innerHTML = (E.conversacion || []).map((c) => `<div class="${c.quien}${c.ignorado ? ' ignorado' : ''}">
+    <small>${esc(c.hora)} · ${c.quien === 'juan' ? '🤖 Juan' : '🎤 ' + esc(t('llm.oido'))}${c.intencion ? ' · ' + esc(c.intencion) : ''}${c.ignorado ? ' · ' + esc(t('llm.ignorado')) : ''}</small>${esc(c.texto)}</div>`).join('')
+    || `<p class="muted small">${esc(t('llm.sin_charla'))}</p>`;
+}
+async function estado() {
+  try { E = await api('GET', '/api/llm'); pintar(); error(); } catch (e) { error(e); }
+}
+
+document.querySelector('.modo').onclick = async (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  try { E = await api('PUT', '/api/llm', {activo: b.dataset.activo === '1'}); pintar(); } catch (err) { error(err); }
+};
+$('form').onsubmit = async (e) => {
+  e.preventDefault();
+  const texto = $('texto').value.trim(); if (!texto) return;
+  $('enviar').disabled = true; $('resp').hidden = false; $('resp').className = 'msg'; $('resp').textContent = t('llm.pensando');
+  try {
+    const r = await api('POST', '/api/llm/preguntar', {texto, idioma: LANG});
+    $('resp').className = 'msg ' + (r.respuesta ? 'ok' : 'bad');
+    $('resp').textContent = `${r.respuesta || t('llm.sin_resp')}\n— ${r.fuente} · ${r.ms} ms`;
+    estado();
+  } catch (err) { $('resp').className = 'msg bad'; $('resp').textContent = err.message || err; }
+  $('enviar').disabled = false;
+};
+$('recargar').onclick = async () => {
+  $('recargar').disabled = true; $('recargado').textContent = '';
+  try { const r = await api('POST', '/api/llm/recargar'); $('recargado').textContent = t('llm.recargado', {n: r.documentos}); }
+  catch (err) { $('recargado').textContent = err.message || err; }
+  $('recargar').disabled = false;
+};
+
+initComun();
+langListeners.push(pintar);
+estado(); setInterval(estado, 1500);
+</script>
+</body>
+</html>

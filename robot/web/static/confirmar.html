@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cerberus · Confirmar identidad</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/comun.css?v=2">
+</head>
+<body>
+<header>
+  <h1>Cerberus</h1>
+  <nav><a href="/captura" data-i18n="nav.captura"></a><a href="/identificar" data-i18n="nav.identificar"></a><a class="on" href="#" data-i18n="nav.confirmar"></a><a href="/roles" data-i18n="nav.roles"></a><a href="/robot" data-i18n="nav.robot"></a><a href="/llm" data-i18n="nav.llm"></a><a href="/docs" target="_blank" data-i18n="nav.api"></a></nav>
+  <div class="tools" id="tools"></div>
+</header>
+<main>
+  <section>
+    <div class="stage"><video id="video" playsinline muted></video><canvas id="overlay"></canvas></div>
+    <div class="bar" aria-hidden="true"><div id="progress"></div></div>
+    <p class="muted" id="status" data-i18n="conf.status"></p>
+    <div id="vozOut" class="msg voz" hidden aria-live="polite"></div>
+  </section>
+  <section>
+    <div class="panel" aria-live="polite">
+      <h2 id="titulo" data-i18n="conf.titulo"></h2>
+      <div id="rol" class="big" style="color:var(--porconfirmar)" data-i18n="conf.muestre"></div>
+      <div id="pista" class="muted" aria-live="polite"></div>
+      <div id="quien" class="muted"></div>
+      <div id="accion" class="msg" hidden></div>
+      <div class="row">
+        <button id="btnNo" class="secondary" data-i18n="conf.no_tengo"></button>
+        <a href="/identificar"><button class="secondary" data-i18n="conf.volver"></button></a>
+      </div>
+    </div>
+  </section>
+</main>
+<div id="activar" class="banner" hidden data-i18n="voz.activar"></div>
+<script src="/static/i18n.js?v=6"></script>
+<script src="/static/comun.js?v=2"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const cam = new Camara($('video'), $('overlay'));
+const cid = new URLSearchParams(location.search).get('c');
+const TIEMPO = 30000;          // ms para mostrar la cedula o el pase antes de pasar a recepcion
+let done = false, info = null;
+
+function textos() {  // lo que depende del idioma y de quien es (se rehace si cambia el idioma)
+  if (!info || done) return;
+  const desconocido = info.modo === 'desconocido';
+  $('titulo').textContent = t(desconocido ? 'conf.no_ident' : 'conf.no_seguro');
+  $('quien').textContent = desconocido ? t('conf.no_ident_d') : t('conf.pareces', {nombre: info.nombre});
+}
+
+function fin(r) {
+  done = true;
+  cam.clear();
+  if (r.qr) { const c = cam.overlay.getContext('2d'); c.lineWidth = 6; c.strokeStyle = rolColor(r.rol);
+    c.beginPath(); r.qr.forEach(([x, y], i) => i ? c.lineTo(x, y) : c.moveTo(x, y)); c.closePath(); c.stroke(); }
+  $('rol').textContent = rolName(r.rol); $('rol').style.color = rolColor(r.rol);
+  const ok = r.estado.startsWith('CONFIRMADO');
+  $('titulo').textContent = ok ? t('conf.ok', {doc: r.documento}) : t('conf.no_pude');
+  $('pista').textContent = '';
+  $('quien').textContent = `${r.nombre} · ${ok ? t('conf.con', {doc: r.documento}) : t('conf.recepcion')} · ${r.motivo}`;
+  $('accion').hidden = false; $('accion').textContent = r.accion;
+  $('status').textContent = t('conf.registrado');
+  hablar(r.accion);
+  setTimeout(() => { location.href = '/identificar'; }, 9000);
+}
+const sinPase = async () => { if (!done) fin(await api('POST', `/api/confirmar/${cid}/sin-pase`)); };
+
+async function main() {
+  if (!cid) { $('status').textContent = t('conf.falta'); return; }
+  try { info = await api('GET', `/api/confirmar/${cid}`); }
+  catch (e) { $('status').textContent = e.message; setTimeout(() => { location.href = '/identificar'; }, 2500); return; }   // vencida o el servidor se reinicio
+  textos();
+  try { await cam.start(); } catch (e) { $('status').textContent = e.message; return; }
+  const t0 = performance.now();
+  while (!done) {
+    const left = TIEMPO - (performance.now() - t0);
+    $('progress').style.width = `${Math.max(0, left / TIEMPO * 100)}%`;
+    if (left <= 0) return sinPase();
+    try {
+      const r = await api('POST', `/api/confirmar/${cid}`, await cam.frame());
+      if (r.estado !== 'ESPERANDO') return fin(r);
+      $('pista').textContent = r.pista || '';
+    } catch (e) { $('status').textContent = e.message; return; }
+  }
+}
+$('btnNo').onclick = sinPase;
+initComun({onVoz: async (r) => {
+  if (r.intencion === 'sin_documento') { hablar(r.respuesta, r.idioma); sinPase(); return true; }
+  if (r.intencion === 'volver') { location.href = '/identificar'; return true; }
+  return false;
+}});
+langListeners.push(textos);
+main();
+</script>
+</body>
+</html>

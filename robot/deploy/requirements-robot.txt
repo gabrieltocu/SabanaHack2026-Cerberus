@@ -1,0 +1,18 @@
+# Cerberus dentro del X2 Ultra (unidad de desarrollo = Jetson Orin, aarch64, Ubuntu 22.04 + ROS 2 Humble).
+# Es requirements.txt SIN lo que solo sirve en el laptop: mujoco, scipy y fast-simplification (club simulado),
+# httpx (pruebas) y pyobjc (macOS). Lo demas es identico, para que el cerebro se comporte igual.
+#
+#   Instalacion:  ./deploy/instalar_en_robot.sh          (desde el laptop; copia codigo, modelos y datos)
+#   Sin internet en el robot:  ./deploy/instalar_en_robot.sh --wheels  (prepara las ruedas aarch64 aqui) y luego --instalar
+#
+# numpy y opencv suelen venir ya en el Orin (JetPack y ROS): el venv se crea con --system-site-packages para
+# reusarlos y no compilar nada. torch llega como rueda aarch64 de PyPI (CPU): a YOLO-face nano le alcanza.
+opencv-python>=4.10,<5
+numpy>=1.26,<2.3
+ultralytics>=8.3
+pillow
+zxing-cpp
+fastapi>=0.115
+uvicorn>=0.30
+faster-whisper
+av<18                       # PyAV 18+ rompe faster-whisper 1.2 (ver requirements.txt)

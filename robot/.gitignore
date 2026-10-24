@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+# Fotos, videos y galeria del equipo: pesan mucho y el repo es publico
+datos/
+*.npz
+x2_*/
+*.heic
+*.HEIC
+*.mov
+*.MOV
+*.mp4
+# Pesos YOLO (se descargan, ver yolo_face.py) y salidas de ultralytics
+modelos/*.pt
+runs/
+log/
+# Pases QR generados
+passes/
+# macOS
+.DS_Store
+pases/
+# Fotos de cedulas: datos personales, no se suben (solo el LEEME)
+identificacion/*
+!identificacion/LEEME.md

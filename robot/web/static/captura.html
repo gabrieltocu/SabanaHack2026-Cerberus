@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cerberus · Captura</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/comun.css?v=2">
+</head>
+<body>
+<header>
+  <h1>Cerberus</h1>
+  <nav><a class="on" href="/captura" data-i18n="nav.captura"></a><a href="/identificar" data-i18n="nav.identificar"></a><a href="/roles" data-i18n="nav.roles"></a><a href="/robot" data-i18n="nav.robot"></a><a href="/llm" data-i18n="nav.llm"></a><a href="/docs" target="_blank" data-i18n="nav.api"></a></nav>
+  <div class="tools" id="tools"></div>
+</header>
+<main>
+  <section>
+    <div class="stage"><video id="video" playsinline muted></video><canvas id="overlay"></canvas></div>
+    <div class="instruction" id="instruction" aria-live="polite" data-i18n="cap.instr"></div>
+    <div class="bar" aria-hidden="true"><div id="progress"></div></div>
+    <p class="muted" id="status" data-i18n="cap.status"></p>
+    <div id="vozOut" class="msg voz" hidden aria-live="polite"></div>
+  </section>
+
+  <section>
+    <div class="panel">
+      <h2 data-i18n="cap.persona"></h2>
+      <label for="nombre" data-i18n="cap.nombre"></label>
+      <input id="nombre" autocomplete="off" placeholder="Ana Pérez">
+      <label for="pid" data-i18n="cap.id"></label>
+      <input id="pid" autocomplete="off" placeholder="ana_perez">
+      <label for="rol" data-i18n="cap.rol"></label>
+      <select id="rol">
+        <option value="VIP" data-i18n="rol.VIP"></option>
+        <option value="REGULAR" data-i18n="rol.REGULAR"></option>
+        <option value="INVITADO" data-i18n="rol.INVITADO"></option>
+        <option value="PERSONAL" data-i18n="rol.PERSONAL"></option>
+        <option value="EXTERNO" data-i18n="rol.EXTERNO"></option>
+      </select>
+      <label for="cedula" data-i18n="cap.cedula"></label>
+      <input id="cedula" inputmode="numeric" autocomplete="off" placeholder="1012345678">
+      <label for="idFoto" data-i18n="cap.idfoto"></label>
+      <input id="idFoto" type="file" accept="image/*,.heic">
+      <div class="row">
+        <button id="btnEnrol" data-i18n="cap.btn_enrol"></button>
+        <button id="btnVal" class="secondary" data-i18n="cap.btn_val"></button>
+        <button id="btnSave" class="secondary" data-i18n="cap.btn_save"></button>
+      </div>
+      <div id="result" class="msg" hidden></div>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h2 data-i18n="inv.titulo"></h2>
+      <label for="invNombre" data-i18n="inv.nombre"></label>
+      <input id="invNombre" autocomplete="off" placeholder="Laura Díaz">
+      <label for="invHost" data-i18n="inv.anfitrion"></label>
+      <select id="invHost"></select>
+      <label for="invHasta" data-i18n="inv.hasta"></label>
+      <input id="invHasta" type="date">
+      <label for="invFoto" data-i18n="inv.foto"></label>
+      <input id="invFoto" type="file" accept="image/jpeg,image/png">
+      <div class="row">
+        <button id="btnInv" data-i18n="inv.btn"></button>
+        <button id="btnSync" class="secondary" data-i18n="inv.sync"></button>
+      </div>
+      <div id="invOut" class="msg" hidden></div>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h2 data-i18n="cap.equipo"></h2>
+      <div class="scroll"><table><thead><tr><th data-i18n="th.persona"></th><th data-i18n="th.rol"></th><th data-i18n="th.cedula"></th><th data-i18n="th.enrol"></th><th data-i18n="th.valid"></th><th></th></tr></thead>
+        <tbody id="people"></tbody></table></div>
+      <div class="row">
+        <button id="btnEval" class="secondary" data-i18n="cap.btn_eval"></button>
+        <button id="btnYolo" class="secondary" data-i18n="cap.btn_yolo"></button>
+      </div>
+      <div id="evalOut" class="msg" hidden></div>
+    </div>
+
+  </section>
+</main>
+<div id="activar" class="banner" hidden data-i18n="voz.activar"></div>
+<script src="/static/i18n.js?v=6"></script>
+<script src="/static/comun.js?v=2"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const cam = new Camara($('video'), $('overlay'));
+let running = false;
+
+const slugify = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40);
+$('nombre').addEventListener('input', () => { $('pid').value = slugify($('nombre').value); });
+
+function show(el, text, kind) { el.hidden = false; el.textContent = text; el.className = 'msg ' + (kind || ''); }
+const persona = () => ({nombre: $('nombre').value.trim(), rol: $('rol').value, cedula: $('cedula').value});
+
+async function capturar(split) {
+  if (running) return;
+  const pid = $('pid').value.trim(), {nombre} = persona();
+  if (!nombre || !pid) { hablar(t('cap.falta_nombre')); return show($('result'), t('cap.falta_nombre'), 'bad'); }
+  running = true; escucha.paused = true;   // durante la captura la voz guia; no se escuchan comandos
+  $('btnEnrol').disabled = $('btnVal').disabled = true; $('result').hidden = true;
+  try {
+    await api('PUT', `/api/personas/${pid}`, persona());
+    await cam.start();
+    const g = await api('GET', '/api/captura/guion');
+    const pasos = g.instrucciones.map((_, i) => t('prompt.' + i)), seg = g.segundos_por_instruccion * 1000, total = pasos.length * seg;
+    hablar(split === 'enrolamiento' ? t('cap.hola', {nombre: nombre.split(' ')[0]}) : t('cap.hola_val'));
+    for (let n = 3; n > 0; n--) { $('instruction').textContent = t('cap.empezamos', {n}); await sleep(1000); }
+    const t0 = performance.now();
+    for (const [i, paso] of pasos.entries()) {
+      $('instruction').textContent = `${i + 1}/${pasos.length} · ${paso}`;
+      hablar(paso);
+      const end = performance.now() + seg;
+      while (performance.now() < end) {
+        const last = await api('POST', `/api/captura/${pid}/frame?split=${split}&instruccion=${encodeURIComponent(g.instrucciones[i])}`, await cam.frame());
+        cam.clear();
+        if (last.box) cam.box(last.box, last.util ? css('--ok') : css('--bad'), last.util ? '' : (last.motivos || []).join(', '));
+        $('status').textContent = last.caras === 1 ? `${t('cap.utiles', {n: last.candidatos})}${last.util ? '' : ' · ' + (last.pistas[0] || t('cap.ajuste'))}`
+                                                   : (last.caras ? t('cap.varias') : t('cap.no_cara'));
+        $('progress').style.width = `${Math.min(100, (performance.now() - t0) / total * 100)}%`;
+      }
+    }
+    cam.clear();
+    $('instruction').textContent = t('cap.eligiendo');
+    hablar(t('cap.gracias'));
+    const r = await api('POST', `/api/captura/${pid}/finalizar?split=${split}`);
+    const next = split === 'enrolamiento' ? t('cap.sig_val') : t('cap.completa');
+    const intr = Object.entries(r.descartadas_otra_persona || {});
+    const nIntr = intr.reduce((n, [, v]) => n + v, 0), quien = intr.map(([k]) => k === '?' ? '?' : k).join(', ');
+    show($('result'), `${t('cap.resultado', {...r, nombre})}\n${nIntr ? t('cap.intrusos', {n: nIntr, quien}) + '\n' : ''}` +
+      `${r.faltan_variaciones ? t('cap.faltan') + '\n' : ''}${next}`, r.faltan_variaciones || nIntr ? 'bad' : 'ok');
+    hablar(r.faltan_variaciones ? t('cap.faltan') : next);
+    $('instruction').textContent = split === 'enrolamiento' ? t('cap.ahora_val') : t('cap.listo');
+  } catch (e) {
+    show($('result'), e.message, 'bad');
+    $('instruction').textContent = t('cap.fallo');
+  } finally {
+    running = false; escucha.paused = false;
+    $('btnEnrol').disabled = $('btnVal').disabled = false; $('progress').style.width = '0';
+    cargarEquipo();
+  }
+}
+
+async function cargarEquipo() {
+  const people = await api('GET', '/api/personas');
+  $('people').innerHTML = people.map((p) => `<tr><td>${esc(p.nombre)}<br><span class="muted">${esc(p.id)}</span></td>
+    <td><span class="badge" style="background:${rolColor(p.vencida ? 'ESCALAMIENTO' : p.rol)}">${esc(rolName(p.rol))}</span>
+      ${p.anfitrion ? `<br><span class="muted">${esc(t('inv.de', {a: p.anfitrion}))}${p.vencida ? ' · ' + esc(t('inv.vencida')) : ''}</span>` : ''}</td>
+    <td>${esc(p.cedula) || '—'}</td><td>${p.enrolamiento}/15</td><td>${p.validacion}/8</td>
+    <td><button class="danger" data-id="${esc(p.id)}">${esc(t('cap.borrar'))}</button></td></tr>`).join('')
+    || `<tr><td colspan="6" class="muted">${esc(t('cap.nadie'))}</td></tr>`;
+  const hosts = people.filter((p) => p.rol === 'VIP' || p.rol === 'REGULAR');
+  $('invHost').innerHTML = hosts.map((p) => `<option value="${esc(p.id)}">${esc(p.nombre)} · ${esc(rolName(p.rol))}</option>`).join('');
+}
+
+$('people').addEventListener('click', async (e) => {
+  const id = e.target.dataset?.id;
+  if (id && confirm(t('cap.confirm_borrar', {id}))) { await api('DELETE', `/api/personas/${id}`); cargarEquipo(); }
+});
+$('btnEnrol').onclick = () => capturar('enrolamiento');
+$('btnVal').onclick = () => capturar('validacion');
+$('btnSave').onclick = async () => {
+  const pid = $('pid').value.trim();
+  if (!persona().nombre || !pid) return show($('result'), t('cap.falta_nombre'), 'bad');
+  try {
+    const r = await api('PUT', `/api/personas/${pid}`, persona());
+    show($('result'), t('cap.guardado', {txt: `${r.nombre} · ${rolName(r.rol)}${r.cedula ? ' · ' + r.cedula : ''}`}), 'ok'); cargarEquipo();
+  } catch (e) { show($('result'), e.message, 'bad'); }
+};
+$('idFoto').onchange = async () => {
+  const file = $('idFoto').files[0], pid = $('pid').value.trim();
+  if (!file) return;
+  if (!pid) { $('idFoto').value = ''; return show($('result'), t('cap.falta_nombre'), 'bad'); }
+  show($('result'), t('cap.leyendo'));
+  try {
+    await api('PUT', `/api/personas/${pid}`, persona());
+    const r = await api('POST', `/api/identificacion/${pid}`, file);
+    show($('result'), r.error ? t('cap.no_reg', {e: r.error}) :
+      `${r.documento ? t('cap.doc', {d: r.documento.replace('_', ' ')}) : t('cap.no_ced')} · ${r.cedula ? t('cap.ced_reg', {n: r.cedula}) : t('cap.ced_no')}` +
+      `${r.cara ? ' · ' + t('cap.ced_cara') : ''}\nidentificacion/${pid}/${r.guardada}`, r.cedula && !r.error ? 'ok' : 'bad');
+    cargarEquipo();
+  } catch (e) { show($('result'), e.message, 'bad'); }
+  $('idFoto').value = '';
+};
+$('btnInv').onclick = async () => {
+  const file = $('invFoto').files[0], nombre = $('invNombre').value.trim();
+  if (!nombre || !file || !$('invHost').value) return show($('invOut'), `${t('inv.nombre')} · ${t('inv.anfitrion')} · ${t('inv.foto')}`, 'bad');
+  const foto = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(file); });
+  try {
+    const r = await api('POST', '/api/invitados', {nombre, anfitrion: $('invHost').value, foto_base64: foto, valido_hasta: $('invHasta').value});
+    show($('invOut'), t('inv.ok', {nombre: r.nombre, anfitrion: r.anfitrion}), 'ok');
+    $('invNombre').value = ''; $('invFoto').value = ''; cargarEquipo();
+  } catch (e) { show($('invOut'), e.message, 'bad'); }
+};
+$('btnSync').onclick = async () => {
+  try { const r = await api('POST', '/api/invitados/sincronizar'); show($('invOut'), t('inv.sync_ok', {n: r.enroladas, leidas: r.leidas}), 'ok'); cargarEquipo(); }
+  catch (e) { show($('invOut'), e.message, 'bad'); }
+};
+$('btnEval').onclick = async () => {
+  try {
+    const r = await api('POST', '/api/evaluar');
+    show($('evalOut'), t('cap.eval', {top1: (r.top1 * 100).toFixed(1), imp: (r.impostores_aceptados * 100).toFixed(1), rej: r.cos_reject, sure: r.cos_sure}) +
+      '\n' + Object.entries(r.por_persona).map(([k, v]) => `${k}: ${v}`).join(' · '), r.top1 >= 0.95 ? 'ok' : 'bad');
+  } catch (e) { show($('evalOut'), e.message, 'bad'); }
+};
+$('btnYolo').onclick = async () => {
+  try {
+    const r = await api('POST', '/api/exportar-yolo');
+    show($('evalOut'), `${t('cap.yolo')}\n${r.carpeta}\n` + Object.entries(r.personas).map(([k, v]) => `${k}: train ${v.train || 0} · val ${v.val || 0}`).join('\n'), 'ok');
+  } catch (e) { show($('evalOut'), e.message, 'bad'); }
+};
+
+const ROL_POR_VOZ = {vip: 'VIP', socio: 'REGULAR', invitado: 'INVITADO', trabajo: 'PERSONAL', servicio: 'EXTERNO'};
+initComun({onVoz: async (r) => {
+  if (running) return true;
+  if (r.intencion === 'nombre') { $('nombre').value = r.nombre; $('pid').value = slugify(r.nombre); hablar(r.respuesta, r.idioma); return true; }
+  if (r.intencion in ROL_POR_VOZ) { $('rol').value = ROL_POR_VOZ[r.intencion]; hablar(t('cap.rol_dicho', {rol: rolName($('rol').value)})); return true; }
+  if (r.intencion === 'enrolamiento' || r.intencion === 'iniciar') { capturar('enrolamiento'); return true; }
+  if (r.intencion === 'validacion') { capturar('validacion'); return true; }
+  if (r.intencion === 'evaluar') { $('btnEval').click(); return true; }
+  return false;
+}});
+langListeners.push(cargarEquipo);
+cargarEquipo();
+</script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+{
+  "_nota": "Registros del dia SIMULADOS (agenda de invitados, turnos, ordenes de trabajo). Claves = --id usados al capturar. Los socios VIP/REGULAR salen de robotA/registros/socios.json.",
+  "invitados": {"invitado_1": {"anfitrion": "Andres"}},
+  "personal": {"personal_1": {"turno": "cocina 09:00-17:00"}},
+  "externos": {"externo_1": {"ot": "OT-1042", "supervisor": "mantenimiento"}}
+}

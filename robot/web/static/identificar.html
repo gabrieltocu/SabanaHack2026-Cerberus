@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cerberus · Identificación</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/comun.css?v=2">
+</head>
+<body>
+<header>
+  <h1>Cerberus</h1>
+  <nav><a href="/captura" data-i18n="nav.captura"></a><a class="on" href="/identificar" data-i18n="nav.identificar"></a><a href="/roles" data-i18n="nav.roles"></a><a href="/robot" data-i18n="nav.robot"></a><a href="/llm" data-i18n="nav.llm"></a><a href="/docs" target="_blank" data-i18n="nav.api"></a></nav>
+  <div class="tools" id="tools"></div>
+</header>
+<main>
+  <section>
+    <div class="stage"><video id="video" playsinline muted></video><canvas id="overlay"></canvas></div>
+    <div class="row">
+      <button id="btnStart" data-i18n="id.start"></button>
+      <button id="btnStop" class="secondary" disabled data-i18n="id.stop"></button>
+      <label style="display:flex;align-items:center;gap:6px;margin:0"><input id="voz" type="checkbox" checked style="width:auto"> <span data-i18n="id.hablar"></span></label>
+    </div>
+    <p class="muted" id="status" data-i18n="id.nota"></p>
+    <div id="vozOut" class="msg voz" hidden aria-live="polite"></div>
+  </section>
+
+  <section>
+    <div class="panel" aria-live="polite">
+      <h2 data-i18n="id.decision"></h2>
+      <div id="rol" class="big">—</div>
+      <div id="quien" class="muted"></div>
+      <div id="accion" class="msg" hidden></div>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h2 data-i18n="id.log"></h2>
+      <div class="scroll"><table><thead><tr><th data-i18n="th.hora"></th><th data-i18n="th.persona"></th><th data-i18n="th.rol"></th><th data-i18n="th.conf"></th><th data-i18n="th.enviado"></th></tr></thead>
+        <tbody id="log"></tbody></table></div>
+      <div class="row">
+        <a href="/api/registros/descargar?formato=csv"><button class="secondary" data-i18n="id.csv"></button></a>
+        <a href="/api/registros/descargar?formato=json"><button class="secondary" data-i18n="id.json"></button></a>
+        <button id="btnResend" class="secondary" data-i18n="id.reenviar"></button>
+      </div>
+      <label for="dbUrl" data-i18n="id.db_url"></label>
+      <input id="dbUrl" placeholder="https://mi-api.ejemplo.com/registros">
+      <label for="dbToken" data-i18n="id.db_token"></label>
+      <input id="dbToken" type="password" autocomplete="off">
+      <label for="invUrl" data-i18n="id.inv_url"></label>
+      <input id="invUrl" placeholder="https://mi-api.ejemplo.com/invitados">
+      <div class="row"><button id="btnCfg" class="secondary" data-i18n="id.guardar"></button></div>
+      <div id="cfgOut" class="msg" hidden></div>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h2 data-i18n="id.umbrales"></h2>
+      <label for="uRej" data-i18n="id.u_reject"></label>
+      <input id="uRej" type="number" step="0.01" min="0.363" max="0.7">
+      <label for="uSure" data-i18n="id.u_sure"></label>
+      <input id="uSure" type="number" step="0.01" min="0.4" max="0.95">
+      <div class="row"><button id="btnU" class="secondary" data-i18n="id.u_guardar"></button></div>
+      <div id="uOut" class="msg" hidden></div>
+    </div>
+  </section>
+</main>
+<div id="activar" class="banner" hidden data-i18n="voz.activar"></div>
+<script src="/static/i18n.js?v=6"></script>
+<script src="/static/comun.js?v=2"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const cam = new Camara($('video'), $('overlay'));
+let running = false, last = null;
+
+async function loop() {
+  while (running) {
+    try {
+      const r = await api('POST', '/api/identificar?camara=web', await cam.frame());
+      cam.clear();
+      for (const c of r.caras) {
+        const rol = c.persona_id ? (c.rol || 'ESCALAMIENTO') : 'ESCALAMIENTO';
+        cam.box(c.box, rolColor(rol), c.persona_id ? `${c.nombre} · ${c.rol ? rolName(c.rol) : t('id.sin_rol')} · ${c.confianza.toFixed(2)}`
+                                                   : `${t('id.desconocido')} · ${c.confianza.toFixed(2)}`);
+      }
+      $('status').textContent = t('id.caras', {n: r.caras.length, ms: r.ms});
+      if (r.decision) mostrar(r.decision);
+    } catch (e) {
+      if (e.status === 409) return enPausa();
+      $('status').textContent = e.message; await sleep(1000);
+    }
+  }
+}
+
+// Mientras el X2 hace la recepcion solo identifica el robot: se suelta la camara y se vuelve sola cuando el robot para
+async function enPausa() {
+  detener(); $('btnStart').disabled = true; $('status').textContent = t('id.robot');
+  while (true) {
+    await sleep(3000);
+    try { if (!(await api('GET', '/api/salud')).robot_activo) return iniciar(); } catch { /* cerebro reiniciando: seguir esperando */ }
+  }
+}
+
+function mostrar(d) {
+  if (!d.rol) {  // sin decision: intentando (mano en la cara...), mala calidad, varias personas o nadie
+    const txt = d.reintento ? `${t('id.intentando', {s: d.segundos_restantes})} — ${(d.pistas || []).join(' · ')}` : (d.pistas || []).join(' · ');
+    if (txt) $('quien').textContent = txt;
+    if (d.reintento && d.pistas?.length && last !== 'reintento' && $('voz').checked) hablar(d.pistas[0]);
+    last = d.reintento ? 'reintento' : null;
+    return;
+  }
+  last = null;
+  $('rol').textContent = rolName(d.rol);
+  $('rol').style.color = rolColor(d.rol);
+  $('quien').textContent = `${d.nombre === 'desconocido' ? t('id.desconocido') : d.nombre} · ${d.estado} · ${t('id.confianza')} ${d.confianza}` +
+    (d.miembro !== undefined ? ` · ${d.miembro ? t('id.miembro') : t('id.no_miembro')} ${t('id.sim')}` : '');
+  $('accion').hidden = false; $('accion').textContent = d.accion;
+  if (d.confirmacion) {  // confianza media o desconocido tras 5 s: lo decide la cedula o el pase QR
+    running = false;
+    $('status').textContent = t('id.pasando');
+    if ($('voz').checked) hablar(d.accion);
+    setTimeout(() => { location.href = `/confirmar?c=${d.confirmacion}`; }, 2500);
+    return;
+  }
+  if (d.registrado) { if ($('voz').checked) hablar(d.accion); cargarLog(); }
+}
+
+async function cargarLog() {
+  const rows = await api('GET', '/api/registros?limit=30');
+  $('log').innerHTML = rows.map((r) => `<tr><td>${esc(new Date(r.fecha).toLocaleTimeString(LANG))}</td><td>${esc(r.nombre)}</td>
+    <td><span class="badge" style="background:${rolColor(r.rol)}">${esc(rolName(r.rol))}</span></td><td>${r.confianza}</td>
+    <td title="${esc(r.error_envio || '')}">${r.enviado ? '✓' : (r.error_envio ? '✗' : '—')}</td></tr>`).join('')
+    || `<tr><td colspan="5" class="muted">${esc(t('id.sin_reg'))}</td></tr>`;
+}
+
+async function iniciar() {
+  if (running) return;
+  try { await cam.start(); } catch (e) { $('status').textContent = e.message; return; }
+  running = true; $('btnStart').disabled = true; $('btnStop').disabled = false; loop();
+}
+function detener() { running = false; $('btnStart').disabled = false; $('btnStop').disabled = true; cam.stop(); }
+
+$('btnStart').onclick = iniciar;
+$('btnStop').onclick = detener;
+$('btnResend').onclick = async () => {
+  try { const r = await api('POST', '/api/registros/reenviar'); $('cfgOut').hidden = false; $('cfgOut').textContent = t('id.intentados', {a: r.intentados, b: r.pendientes}); cargarLog(); }
+  catch (e) { $('cfgOut').hidden = false; $('cfgOut').textContent = e.message; }
+};
+$('btnCfg').onclick = async () => {
+  try {
+    const body = {url: $('dbUrl').value.trim(), invitados_url: $('invUrl').value.trim()};
+    if ($('dbToken').value) body.token = $('dbToken').value;
+    const r = await api('PUT', '/api/config', body);
+    $('cfgOut').hidden = false; $('cfgOut').textContent = r.url ? t('id.destino_ok', {url: r.url}) : t('id.destino_local');
+  } catch (e) { $('cfgOut').hidden = false; $('cfgOut').textContent = e.message; }
+};
+$('btnU').onclick = async () => {
+  try {
+    const r = await api('PUT', '/api/umbrales', {cos_reject: parseFloat($('uRej').value), cos_sure: parseFloat($('uSure').value)});
+    $('uOut').hidden = false; $('uOut').className = 'msg ok'; $('uOut').textContent = t('id.u_ok', {rej: r.cos_reject, sure: r.cos_sure});
+  } catch (e) { $('uOut').hidden = false; $('uOut').className = 'msg bad'; $('uOut').textContent = e.message; }
+};
+
+initComun({onVoz: async (r) => {
+  if (r.intencion === 'iniciar') { iniciar(); return true; }
+  if (r.intencion === 'detener') { detener(); return true; }
+  return false;   // preguntas (bano, restaurante, ayuda...): responde la voz con r.respuesta
+}});
+langListeners.push(cargarLog);
+api('GET', '/api/config').then((c) => { $('dbUrl').value = c.url; $('invUrl').value = c.invitados_url || ''; });
+api('GET', '/api/umbrales').then((u) => { $('uRej').value = u.cos_reject; $('uSure').value = u.cos_sure; });
+cargarLog();
+iniciar();   // la camara arranca sola (el permiso ya dado no pide clic)
+</script>
+</body>
+</html>

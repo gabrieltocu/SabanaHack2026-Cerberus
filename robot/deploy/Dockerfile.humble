@@ -1,0 +1,29 @@
+# Plan B del despliegue: ROS 2 Humble + aimdk_msgs en ESTE equipo (si el cliente no puede correr dentro del robot).
+# Hace falta porque AimDK pide Ubuntu 22.04 + ROS 2 Humble, y este laptop tiene Ubuntu 24.04 + ROS 2 Jazzy:
+# los mensajes de ROS no son compatibles entre distribuciones.
+#
+#   # 1. el SDK AimDK (no se puede descargar sin cuenta): copialo de la unidad de desarrollo del robot
+#   scp -r agibot@10.0.1.41:~/aimdk  deploy/aimdk
+#   # 2. imagen (una vez, ~10 min)
+#   docker build -t cerberus-humble -f deploy/Dockerfile.humble deploy
+#   # 3. correr con la red del equipo (DDS necesita ver al robot) y el codigo montado
+#   docker run --rm -it --network host -v "$PWD":/cerberus -w /cerberus cerberus-humble \
+#     python3 x2/cerberus_x2.py --api http://127.0.0.1:8000 --tts api --escuchar
+# Con --network host el contenedor comparte la IP 10.0.1.2 del host y alcanza la API en 127.0.0.1:8000.
+FROM ros:humble-ros-base
+
+# espeak-ng y ffmpeg solo si quieres generar el espanol aqui; con --tts api lo genera el cerebro
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3-pip python3-numpy espeak-ng ffmpeg \
+ && rm -rf /var/lib/apt/lists/*
+
+# aimdk_msgs del SDK oficial: deploy/aimdk/ debe tener el workspace (src/ o install/) copiado del robot
+COPY aimdk /opt/aimdk
+RUN bash -lc 'source /opt/ros/humble/setup.bash; \
+      if [ -d /opt/aimdk/src ]; then cd /opt/aimdk && colcon build --packages-up-to aimdk_msgs; fi'
+
+ENV ROS_DOMAIN_ID=0
+RUN printf '%s\n' 'source /opt/ros/humble/setup.bash' \
+      '[ -f /opt/aimdk/install/setup.bash ] && source /opt/aimdk/install/setup.bash' >> /root/.bashrc
+SHELL ["/bin/bash", "-lc"]
+CMD ["python3", "x2/cerberus_x2.py", "--help"]

@@ -1,0 +1,8 @@
+[
+  {
+    "id": "OllamaMac0000001",
+    "name": "Ollama del Mac",
+    "type": "ollamaApi",
+    "data": { "baseUrl": "http://host.docker.internal:11434" }
+  }
+]
