@@ -1,0 +1,47 @@
+{
+  "expo": {
+    "name": "N Club",
+    "slug": "cerberus-nogal",
+    "version": "0.1.0",
+    "scheme": "cerberus",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#10231D",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      }
+    },
+    "web": {
+      "output": "single",
+      "bundler": "metro",
+      "favicon": "./assets/favicon.png",
+      "name": "N Club",
+      "shortName": "Cerberus",
+      "themeColor": "#10231D",
+      "backgroundColor": "#F8F6F0"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-status-bar",
+      "expo-font",
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "N Club usa tus fotos solo si eliges una para que el robot reconozca a tu invitado.",
+          "cameraPermission": "N Club usa la cámara solo si tomas la foto de tu invitado para que el robot lo reconozca."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": false
+    }
+  }
+}

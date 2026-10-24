@@ -1,0 +1,9 @@
+dist
+dist-api
+coverage
+playwright-report
+test-results
+.expo
+package-lock.json
+docs/api/openapi.yaml
+playwright-report-smoke

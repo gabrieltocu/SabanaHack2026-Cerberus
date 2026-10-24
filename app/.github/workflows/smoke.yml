@@ -1,0 +1,87 @@
+name: Smoke
+
+# Smoke against the live Vercel deployment. After CI succeeds on main it waits until production
+# serves that exact commit (GET /api/v1/health → commit) and then runs the read-only suite.
+# The write journey only runs on manual dispatch (it consumes the daily invitation quota).
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'URL del despliegue (https://...vercel.app)'
+        required: true
+        type: string
+      write:
+        description: 'Ejecutar también el recorrido de escritura'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smoke-${{ github.event_name }}
+  cancel-in-progress: true
+
+env:
+  PRODUCTION_URL: https://n-club-five.vercel.app
+
+jobs:
+  smoke:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Resolve and validate target
+        env:
+          INPUT_URL: ${{ inputs.url }}
+          WRITE_INPUT: ${{ inputs.write }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          url="${INPUT_URL:-$PRODUCTION_URL}"
+          url="${url%/}"
+          if [[ ! "$url" =~ ^https://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.vercel\.app$ ]]; then
+            echo "::error::La URL del despliegue no empieza por https:// o no termina en .vercel.app"
+            exit 1
+          fi
+          write=0
+          [[ "$WRITE_INPUT" == "true" ]] && write=1
+          { echo "SMOKE_BASE_URL=$url"; echo "SMOKE_WRITE=$write"; echo "EXPECTED_SHA=${HEAD_SHA}"; } >> "$GITHUB_ENV"
+          echo "Objetivo: $url (escritura: $write)"
+      - name: Wait for production to serve this commit
+        if: env.EXPECTED_SHA != ''
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 60); do
+            served=$(curl -fsS "$SMOKE_BASE_URL/api/v1/health" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("commit") or "")' || true)
+            if [[ "$served" == "$EXPECTED_SHA" ]]; then echo "Producción sirve $served"; exit 0; fi
+            sleep 10
+          done
+          echo "::error::Producción no sirvió $EXPECTED_SHA en 10 minutos"
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Smoke
+        run: npm run test:smoke
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: smoke-report
+          path: |
+            playwright-report-smoke/
+            test-results/smoke/
+          if-no-files-found: ignore
+          retention-days: 14

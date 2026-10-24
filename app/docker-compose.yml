@@ -1,0 +1,31 @@
+# Servidor de N Club. `docker compose up -d` levanta la API; con dominio, añade `--profile https`.
+services:
+  api:
+    image: nclub-api:latest
+    build: .
+    env_file: .env
+    ports:
+      - '8080:8080'
+    volumes:
+      - nclub-data:/data
+    restart: unless-stopped
+
+  https:
+    image: caddy:2
+    profiles: ['https']
+    environment:
+      DOMAIN: ${DOMAIN:-}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  nclub-data:
+    name: nclub-data
+  caddy-data:

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "npm ci",
+  "buildCommand": "EXPO_PUBLIC_DATA_MODE=api npx expo export -p web",
+  "outputDirectory": "dist",
+  "rewrites": [
+    {
+      "source": "/api/v1/:path*",
+      "destination": "/api/router?__path=:path*"
+    },
+    {
+      "source": "/api/:first(auth|me|invitaciones|eventos|confirmaciones|robot|bot|panel|club-health|visitas|tareas|equipo|cola|incidencias|evaluaciones|actividades|servicios|reservas-robot|membresia|pase|qr|admin|demo)/:rest*",
+      "destination": "/api/club?__path=:first/:rest*"
+    },
+    {
+      "source": "/api/:first(me|invitaciones|eventos|visitas|tareas|equipo|cola|incidencias|evaluaciones|actividades|servicios|reservas-robot|pase)",
+      "destination": "/api/club?__path=:first"
+    },
+    {
+      "source": "/((?!api/|.*\\..*).*)",
+      "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "Content-Security-Policy",
+          "value": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+        },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        },
+        {
+          "key": "Permissions-Policy",
+          "value": "camera=(self), microphone=(), geolocation=()"
+        }
+      ]
+    }
+  ]
+}

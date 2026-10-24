@@ -1,0 +1,1577 @@
+openapi: 3.1.0
+info:
+  title: Cerberus API
+  version: 1.0.0
+  summary: Contrato propio de Cerberus para la gestión de visitas, invitaciones con QR y relevos robot-humano.
+  description: |
+    API de demostración del MVP de Cerberus para N Club. Todos los datos son ficticios.
+
+    Reglas generales:
+
+    - Prefijo público `/api/v1`. Los cambios compatibles son aditivos; un cambio incompatible exige `/api/v2`.
+    - Sin autenticación real. El actor se declara con la cabecera `X-Demo-Actor` (identificador del directorio, por ejemplo `V-209`, `U-02` o `R1`) y no es verificable, pero cada operación acepta solo a los actores que le corresponden (`ACTOR_NOT_ALLOWED`, 403). Las peticiones tienen límite de tasa por cliente: 600 lecturas, 120 escrituras y 3 reinicios por minuto.
+    - Los endpoints que llama el robot real (`POST /recognition/events`, `POST /access/verify`, `POST /robots/{id}/failure`) exigen `Authorization: Bearer <token>` cuando el servidor define `CERBERUS_ROBOT_TOKEN` (`UNAUTHENTICATED`, 401). El modo demostración del navegador corre sin token.
+    - La API no recibe ni guarda imágenes ni vectores faciales: los cuerpos de `POST /recognition/events`, `POST /access/verify` y `POST /robots/{id}/failure` rechazan los campos desconocidos (`VALIDATION_ERROR`, 422).
+    - Los POST que crean recursos o consumen un token exigen `Idempotency-Key`; el resto la acepta (`Idempotency-Key` opcional).
+    - `GET /passes/{token}` no lleva actor: el token del pase es la credencial del invitado.
+    - Toda respuesta del manejador lleva la cabecera `X-Cerberus-Storage` (`memory`, `redis` o `browser`): el almacenamiento que respalda el despliegue.
+    - Los errores tienen la forma `{ "error": { "code": "...", "message": "..." } }`. Los códigos son estables.
+    - Las fechas y horas se expresan en ISO 8601 con desfase de Bogotá (`-05:00`). Los intervalos son de inicio inclusivo y fin exclusivo.
+    - Las reglas de clasificación, vigencia, uso de QR y responsable de una visita son exclusivas del servidor.
+servers:
+  - url: /api/v1
+    description: Relativo al origen donde se despliega la aplicación.
+tags:
+  - name: Sistema
+  - name: Directorio
+  - name: Invitaciones
+  - name: Acceso
+  - name: Visitas
+  - name: Relevos
+  - name: Robots
+
+paths:
+  /health:
+    get:
+      tags: [Sistema]
+      operationId: getHealth
+      summary: Estado del servicio
+      description: Informa el almacenamiento activo (`memory`, `redis` o `browser`) y el reloj de demostración.
+      responses:
+        '200':
+          description: Servicio disponible.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+              example:
+                status: ok
+                contract: v1
+                storage: memory
+                demo: true
+                clock: { now: '2026-10-24T09:00:00-05:00', timezone: America/Bogota }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /demo/reset:
+    post:
+      tags: [Sistema]
+      operationId: resetDemo
+      summary: Reinicia la demostración
+      description: |
+        Borra visitas, invitaciones, relevos y claves de idempotencia; devuelve los robots a `OK`; fija el reloj de demostración y deja una invitación activa de ejemplo.
+        Límite estricto: 3 por minuto por cliente. Se desactiva en el servidor con la variable `CERBERUS_RESET_ENABLED=false` (cualquier valor distinto de `true` lo desactiva; `CERBERUS_DEMO_RESET=off` sigue funcionando).
+        Errores: `RESET_DISABLED` (403), `VALIDATION_ERROR` (422), `RATE_LIMITED` (429), `INTERNAL_ERROR` y `STORAGE_UNAVAILABLE` (500).
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DemoResetRequest' }
+            example: { now: '2026-10-27T10:00:00-05:00' }
+      responses:
+        '200':
+          description: Demostración reiniciada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DemoResetResponse' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /people:
+    get:
+      tags: [Directorio]
+      operationId: listPeople
+      summary: Directorio demo (socios, personal, externos, edecanes, robots y operadores)
+      description: "Resumen sin preferencias. Errores: `VALIDATION_ERROR` (422), `RATE_LIMITED` (429), `INTERNAL_ERROR` (500)."
+      parameters:
+        - name: role
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/PersonRole' }
+      responses:
+        '200':
+          description: Lista de personas.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PersonList' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /people/{id}:
+    get:
+      tags: [Directorio]
+      operationId: getPerson
+      summary: Detalle de una persona del directorio
+      description: "Incluye las preferencias. Errores: `PERSON_NOT_FOUND` (404), `RATE_LIMITED` (429), `INTERNAL_ERROR` (500)."
+      parameters:
+        - { $ref: '#/components/parameters/PersonId' }
+      responses:
+        '200':
+          description: La persona.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Person' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /activities:
+    get:
+      tags: [Directorio]
+      operationId: listActivities
+      summary: Actividades del día
+      description: "Actividades registradas por el personal para una fecha (por defecto, la del reloj). Errores: `VALIDATION_ERROR` (422), `RATE_LIMITED` (429), `INTERNAL_ERROR` (500)."
+      parameters:
+        - name: date
+          in: query
+          required: false
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Lista de actividades.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ActivityList' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /invitations:
+    post:
+      tags: [Invitaciones]
+      operationId: createInvitation
+      summary: Crea una invitación con QR temporal
+      description: |
+        Un socio activo invita a una persona sin cuenta para una fecha. Crea también la visita esperada.
+        Errores: `IDEMPOTENCY_KEY_REQUIRED` y `BAD_REQUEST` (400), `ACTOR_NOT_ALLOWED` y `HOST_NOT_ELIGIBLE` (403), `PERSON_NOT_FOUND` (404),
+        `INVITATION_DUPLICATE` e `INVITATION_DAILY_LIMIT` (409), `VALIDATION_ERROR`, `INVITATION_DATE_IN_PAST` e `IDEMPOTENCY_KEY_REUSED` (422), `RATE_LIMITED` (429), `INTERNAL_ERROR` y `STORAGE_UNAVAILABLE` (500).
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKeyRequired' }
+        - { $ref: '#/components/parameters/ActorRequired' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InvitationCreate' }
+            example:
+              hostId: V-202
+              guest: { fullName: Sebastián Lozano, note: Café sin azúcar }
+              meetingPoint: Cancha de tenis
+              date: '2026-10-24'
+      responses:
+        '201':
+          description: Invitación creada.
+          headers:
+            Idempotency-Replayed:
+              description: "`true` si la respuesta repite una petición anterior con la misma clave."
+              schema: { type: string, enum: ['true'] }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Invitation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    get:
+      tags: [Invitaciones]
+      operationId: listInvitations
+      summary: Invitaciones de un anfitrión
+      description: |
+        Solo el propio anfitrión (`X-Demo-Actor` igual a `hostId`) o un operador; las invitaciones llevan el token del QR.
+        Errores: `ACTOR_NOT_ALLOWED` (403), `VALIDATION_ERROR` (422, por ejemplo si falta `hostId`), `RATE_LIMITED` (429), `INTERNAL_ERROR` (500).
+      parameters:
+        - { $ref: '#/components/parameters/ActorRequired' }
+        - name: hostId
+          in: query
+          required: true
+          schema: { type: string }
+        - name: state
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/InvitationState' }
+        - name: date
+          in: query
+          required: false
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Lista de invitaciones.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InvitationList' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /invitations/{id}:
+    get:
+      tags: [Invitaciones]
+      operationId: getInvitation
+      summary: Detalle de una invitación
+      description: |
+        Solo el anfitrión de la invitación o un operador (lleva el token del QR).
+        Errores: `ACTOR_NOT_ALLOWED` (403), `INVITATION_NOT_FOUND` (404), `RATE_LIMITED` (429), `INTERNAL_ERROR` (500).
+      parameters:
+        - { $ref: '#/components/parameters/InvitationId' }
+        - { $ref: '#/components/parameters/ActorRequired' }
+      responses:
+        '200':
+          description: La invitación con su estado efectivo.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Invitation' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /invitations/{id}/cancel:
+    post:
+      tags: [Invitaciones]
+      operationId: cancelInvitation
+      summary: Cancela una invitación activa y revoca su QR
+      description: |
+        Idempotente: cancelar una invitación ya cancelada devuelve 200.
+        Errores: `ACTOR_NOT_ALLOWED` (403), `INVITATION_NOT_FOUND` (404), `INVITATION_NOT_ACTIVE` y `VERSION_CONFLICT` (409), `VALIDATION_ERROR` (422), `RATE_LIMITED` (429), `INTERNAL_ERROR` (500).
+      parameters:
+        - { $ref: '#/components/parameters/InvitationId' }
+        - { $ref: '#/components/parameters/ActorRequired' }
+        - { $ref: '#/components/parameters/IdempotencyKeyOptional' }
+      responses:
+        '200':
+          description: Invitación cancelada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Invitation' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /passes/{token}:
+    get:
+      tags: [Invitaciones]
+      operationId: getPass
+      summary: Pase del invitado por su token (enlace de entrada)
+      description: |
+        Sin `X-Demo-Actor`: poseer el token es la autorización, como un enlace de entrada. Devuelve solo lo que el invitado necesita para mostrar su pase (nombre de pila del invitado y del anfitrión, punto de encuentro, fecha, ventana, estado y QR); nunca ids, contacto, notas ni apellidos.
+        `state` es el efectivo según el reloj de la demostración: `NOT_YET_VALID` es un pase activo cuya ventana no abrió. Un token mal formado, desconocido o de otra invitación da el mismo 404 `PASS_NOT_FOUND`. Aplica el límite de lecturas.
+        Errores: `PASS_NOT_FOUND` (404), `RATE_LIMITED` (429), `INTERNAL_ERROR` y `STORAGE_UNAVAILABLE` (500).
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string, examples: [nq_Zx9Lm2QwR7tYb4NcV1sHaA] }
+      responses:
+        '200':
+          description: El pase.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pass' }
+              example:
+                guestFirstName: Sebastián
+                hostShortName: Camila
+                meetingPoint: Cancha de tenis
+                date: '2026-10-24'
+                window: { from: '06:00', to: '22:00' }
+                state: ACTIVE
+                qr:
+                  token: nq_Zx9Lm2QwR7tYb4NcV1sHaA
+                  validFrom: '2026-10-24T06:00:00-05:00'
+                  validTo: '2026-10-24T22:00:00-05:00'
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /access/verify:
+    post:
+      tags: [Acceso]
+      operationId: verifyAccess
+      summary: Verifica un QR de invitación y, si es válido, lo consume
+      description: |
+        Una denegación es un resultado de negocio: responde 200 con `decision: DENIED` y un motivo, nunca un error de transporte.
+        Con `visitId` se vincula una visita en revisión manual con la visita esperada de la invitación (la de revisión se cierra con motivo `MERGED`).
+        Solo robots, edecanes u operador (`ACTOR_NOT_ALLOWED`).
+        Errores: `IDEMPOTENCY_KEY_REQUIRED` y `BAD_REQUEST` (400), `UNAUTHENTICATED` (401, solo si se activa el token de robot), `ACTOR_NOT_ALLOWED` (403),
+        `VISIT_NOT_FOUND` (404), `INVALID_TRANSITION` y `VERSION_CONFLICT` (409), `VALIDATION_ERROR` e `IDEMPOTENCY_KEY_REUSED` (422), `RATE_LIMITED` (429), `INTERNAL_ERROR` y `STORAGE_UNAVAILABLE` (500).
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKeyRequired' }
+        - { $ref: '#/components/parameters/ActorRequired' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessVerifyRequest' }
+            example: { token: nq_kP3vQ8mZr1XwT5bN9aLd0g }
+      responses:
+        '200':
+          description: Resultado de la verificación.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessVerifyResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /recognition/events:
+    post:
+      tags: [Acceso]
+      operationId: createRecognitionEvent
+      summary: Registra una señal facial del robot o del simulador y clasifica la llegada
+      description: |
+        Crea una visita (o devuelve la visita abierta de la persona identificada) y devuelve la clasificación en dos etapas.
+        Responde 201 al crear una visita y 200 si la persona ya tenía una visita abierta (`matchedOpenVisit: true`).
+        Solo robots (`R1`, `R2`, `R3`) u operador. `source.id` debe ser un robot del directorio y, si llama un robot, el suyo; un robot no firma por otro. El cuerpo es estricto: una imagen, un vector u otro campo desconocido es `VALIDATION_ERROR` y no se guarda.
+        Errores: `IDEMPOTENCY_KEY_REQUIRED` y `BAD_REQUEST` (400), `UNAUTHENTICATED` (401, solo si se activa el token de robot), `ACTOR_NOT_ALLOWED` (403),
+        `VERSION_CONFLICT` (409), `VALIDATION_ERROR` e `IDEMPOTENCY_KEY_REUSED` (422), `RATE_LIMITED` (429), `INTERNAL_ERROR` y `STORAGE_UNAVAILABLE` (500).
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKeyRequired' }
+        - { $ref: '#/components/parameters/ActorRequired' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RecognitionEventRequest' }
+            examples:
+              socioVip:
+                summary: Andrés, socio VIP
+                value:
+                  source: { kind: SIMULATOR, id: R1 }
+                  face: { status: MATCH, classHint: MEMBER, candidateId: V-201, confidence: 0.97 }
+                  observedAt: '2026-10-24T09:02:11-05:00'
+              invitada:
+                summary: Valentina, invitada con QR
+                value:
+                  source: { kind: ROBOT, id: R1 }
+                  face: { status: MATCH, classHint: NON_MEMBER, confidence: 0.91 }
+                  evidence: { qrToken: nq_kP3vQ8mZr1XwT5bN9aLd0g }
+                  observedAt: '2026-10-24T09:05:40-05:00'
+      responses:
+        '200':
+          description: La persona ya tenía una visita abierta; se devuelve esa visita.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecognitionEventResponse' }
+        '201':
+          description: Visita creada y clasificada.
+          headers:
+            Idempotency-Replayed:
+              description: "`true` si la respuesta repite una petición anterior con la misma clave."
+              schema: { type: string, enum: ['true'] }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecognitionEventResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /visits:
+    get:
+      tags: [Visitas]
+      operationId: listVisits
+      summary: Lista visitas
+      description: "Errores: `VALIDATION_ERROR` (422), `RATE_LIMITED` (429), `INTERNAL_ERROR` (500)."
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/VisitState' }
+        - name: ownerId
+          in: query
+          required: false
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+      responses:
+        '200':
+          description: Lista de visitas.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VisitList' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /visits/{id}:
+    get:
+      tags: [Visitas]
+      operationId: getVisit
+      summary: Detalle de una visita
+      description: "Errores: `VISIT_NOT_FOUND` (404), `RATE_LIMITED` (429), `INTERNAL_ERROR` (500)."
+      parameters:
+        - { $ref: '#/components/parameters/VisitId' }
+      responses:
+        '200':
+          description: La visita.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Visit' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /visits/{id}/advance:
+    post:
+      tags: [Visitas]
+      operationId: advanceVisit
+      summary: Aplica un evento a la visita
+      description: |
+        Eventos: `RESOLVE_REVIEW`, `START_ORIENTATION`, `ASSIGN_ESCORT`, `ARRIVE` y `ABORT`. Cada uno tiene su guarda en `docs/domain/visit-handoff-states.md`. Un robot solo actúa sobre las visitas que le pertenecen; un edecán o el operador, sobre cualquiera. `ASSIGN_ESCORT` con `SELF` exige que el responsable actual pueda acompañar (no R1, no un robot en `FAULT`); con `NONE` la visita pasa a `IN_PROGRESS` sin acompañante (personal o quien rechaza el acompañamiento; un externo siempre va con un edecán humano: `ESCORT_NOT_ALLOWED`). Un acompañante con otra visita en marcha, o con un relevo aceptado sin confirmar, está ocupado: `ASSIGNEE_BUSY`.
+        Errores: `BAD_REQUEST` (400), `ACTOR_NOT_ALLOWED` (403), `VISIT_NOT_FOUND` (404),
+        `INVALID_TRANSITION`, `VERSION_CONFLICT` y `ASSIGNEE_BUSY` (409),
+        `VALIDATION_ERROR`, `VISITOR_ACCEPTANCE_REQUIRED`, `ESCORT_NOT_ALLOWED` y `REVIEW_NOT_CONFIRMABLE` (422), `RATE_LIMITED` (429), `INTERNAL_ERROR` y `STORAGE_UNAVAILABLE` (500).
+      parameters:
+        - { $ref: '#/components/parameters/VisitId' }
+        - { $ref: '#/components/parameters/ActorRequired' }
+        - { $ref: '#/components/parameters/IdempotencyKeyOptional' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdvanceRequest' }
+            examples:
+              asignar:
+                summary: Camila acepta ir con Sara
+                value: { event: ASSIGN_ESCORT, assigneeId: U-01, visitorAccepted: true }
+              orientar:
+                summary: Inicia la orientación de Andrés
+                value: { event: START_ORIENTATION, destination: Salón reservado }
+      responses:
+        '200':
+          description: Visita actualizada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Visit' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /visits/{id}/close:
+    post:
+      tags: [Visitas]
+      operationId: closeVisit
+      summary: Cierra la visita al confirmar la salida
+      description: |
+        Un robot solo cierra sus propias visitas, salvo R1 (recepción), que cierra la de cualquiera mientras no tenga un relevo abierto (salida en recepción); un edecán o el operador, cualquiera.
+        Errores: `BAD_REQUEST` (400), `ACTOR_NOT_ALLOWED` (403), `VISIT_NOT_FOUND` (404), `INVALID_TRANSITION` y `VERSION_CONFLICT` (409),
+        `VALIDATION_ERROR` (422), `RATE_LIMITED` (429), `INTERNAL_ERROR` y `STORAGE_UNAVAILABLE` (500).
+      parameters:
+        - { $ref: '#/components/parameters/VisitId' }
+        - { $ref: '#/components/parameters/ActorRequired' }
+        - { $ref: '#/components/parameters/IdempotencyKeyOptional' }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CloseRequest' }
+            example: { method: FACE }
+      responses:
+        '200':
+          description: Visita cerrada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Visit' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /visits/{id}/feedback:
+    post:
+      tags: [Visitas]
+      operationId: submitFeedback
+      summary: Registra la evaluación voluntaria de la visita
+      description: |
+        Una sola evaluación por visita, con la visita en `IN_PROGRESS` o `CLOSED`. No se graba voz. La registra el quiosco (robot), un edecán o un operador en nombre del visitante, o el propio visitante (el actor cuyo id es el `personId` de la visita): no es anónima.
+        Errores: `BAD_REQUEST` (400), `ACTOR_NOT_ALLOWED` (403), `VISIT_NOT_FOUND` (404), `INVALID_TRANSITION` y `FEEDBACK_ALREADY_SUBMITTED` (409),
+        `VALIDATION_ERROR` (422), `RATE_LIMITED` (429), `INTERNAL_ERROR` y `STORAGE_UNAVAILABLE` (500).
+      parameters:
+        - { $ref: '#/components/parameters/VisitId' }
+        - { $ref: '#/components/parameters/IdempotencyKeyOptional' }
+        - { $ref: '#/components/parameters/ActorRequired' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FeedbackRequest' }
+            example: { robotRating: 5, robotComment: Muy claro el recorrido., clubRating: 4 }
+      responses:
+        '201':
+          description: Evaluación registrada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Feedback' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /handoffs:
+    post:
+      tags: [Relevos]
+      operationId: createHandoff
+      summary: Solicita el relevo de una visita
+      description: |
+        La visita pasa a `WAITING_HANDOFF`; el responsable no cambia hasta confirmar. Solo el responsable actual o el operador lo piden.
+        Errores: `IDEMPOTENCY_KEY_REQUIRED` y `BAD_REQUEST` (400), `ACTOR_NOT_ALLOWED` (403), `VISIT_NOT_FOUND` y `PERSON_NOT_FOUND` (404),
+        `INVALID_TRANSITION`, `HANDOFF_ALREADY_OPEN` y `VERSION_CONFLICT` (409), `VALIDATION_ERROR` e `IDEMPOTENCY_KEY_REUSED` (422), `RATE_LIMITED` (429), `INTERNAL_ERROR` y `STORAGE_UNAVAILABLE` (500).
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKeyRequired' }
+        - { $ref: '#/components/parameters/ActorRequired' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HandoffCreate' }
+            example:
+              visitId: vis-91be3d05
+              reason: LOW_BATTERY
+              preferredToId: U-02
+              note: R2 necesita regresar a carga.
+      responses:
+        '201':
+          description: Relevo solicitado.
+          headers:
+            Idempotency-Replayed:
+              description: "`true` si la respuesta repite una petición anterior con la misma clave."
+              schema: { type: string, enum: ['true'] }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HandoffResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    get:
+      tags: [Relevos]
+      operationId: listHandoffs
+      summary: Lista relevos (resumen sin contexto completo)
+      description: "Errores: `VALIDATION_ERROR` (422), `RATE_LIMITED` (429), `INTERNAL_ERROR` (500)."
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/HandoffState' }
+        - name: visitId
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: Lista de relevos.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HandoffList' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /handoffs/{id}/accept:
+    post:
+      tags: [Relevos]
+      operationId: acceptHandoff
+      summary: Un acompañante elegible acepta el relevo
+      description: |
+        Solo un edecán (`U-01`..`U-03`) disponible.
+        Compare-and-set por versión: con dos aceptaciones simultáneas gana una y la otra recibe 409. Repetir con el mismo actor devuelve 200.
+        Errores: `BAD_REQUEST` (400), `ACTOR_NOT_ALLOWED` (403), `HANDOFF_NOT_FOUND` (404),
+        `HANDOFF_ALREADY_ACCEPTED`, `HANDOFF_EXPIRED`, `INVALID_TRANSITION`, `RECEIVER_BUSY` y `VERSION_CONFLICT` (409), `VALIDATION_ERROR` (422), `RATE_LIMITED` (429), `INTERNAL_ERROR` y `STORAGE_UNAVAILABLE` (500).
+      parameters:
+        - { $ref: '#/components/parameters/HandoffId' }
+        - { $ref: '#/components/parameters/ActorRequired' }
+        - { $ref: '#/components/parameters/IdempotencyKeyOptional' }
+      responses:
+        '200':
+          description: Relevo aceptado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HandoffResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /handoffs/{id}/context:
+    post:
+      tags: [Relevos]
+      operationId: transferHandoffContext
+      summary: El receptor recibe el contexto completo de la visita
+      description: |
+        Solo el edecán que aceptó. Repetir devuelve el mismo contexto. Es el paso previo obligatorio a confirmar.
+        Errores: `BAD_REQUEST` (400), `ACTOR_NOT_ALLOWED` (403), `HANDOFF_NOT_FOUND` (404),
+        `HANDOFF_EXPIRED`, `INVALID_TRANSITION` y `VERSION_CONFLICT` (409), `VALIDATION_ERROR` (422), `RATE_LIMITED` (429), `INTERNAL_ERROR` y `STORAGE_UNAVAILABLE` (500).
+      parameters:
+        - { $ref: '#/components/parameters/HandoffId' }
+        - { $ref: '#/components/parameters/ActorRequired' }
+        - { $ref: '#/components/parameters/IdempotencyKeyOptional' }
+      responses:
+        '200':
+          description: Contexto entregado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HandoffContextResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /handoffs/{id}/confirm:
+    post:
+      tags: [Relevos]
+      operationId: confirmHandoff
+      summary: El receptor confirma la entrega; único punto en que cambia el responsable
+      description: |
+        Solo el edecán que aceptó. Exige haber recibido el contexto. Idempotente para el mismo receptor.
+        Errores: `BAD_REQUEST` (400), `ACTOR_NOT_ALLOWED` (403), `HANDOFF_NOT_FOUND` (404),
+        `HANDOFF_EXPIRED`, `INVALID_TRANSITION` y `VERSION_CONFLICT` (409), `VALIDATION_ERROR` (422), `RATE_LIMITED` (429), `INTERNAL_ERROR` y `STORAGE_UNAVAILABLE` (500).
+      parameters:
+        - { $ref: '#/components/parameters/HandoffId' }
+        - { $ref: '#/components/parameters/ActorRequired' }
+        - { $ref: '#/components/parameters/IdempotencyKeyOptional' }
+      responses:
+        '200':
+          description: Relevo confirmado; la visita tiene un nuevo responsable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HandoffResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /handoffs/{id}/cancel:
+    post:
+      tags: [Relevos]
+      operationId: cancelHandoff
+      summary: Cancela un relevo no terminal
+      description: |
+        Solo el responsable actual, el edecán asignado o el operador. Idempotente: cancelar uno ya cancelado devuelve 200. El responsable no cambia.
+        Errores: `BAD_REQUEST` (400), `ACTOR_NOT_ALLOWED` (403), `HANDOFF_NOT_FOUND` (404),
+        `INVALID_TRANSITION` y `VERSION_CONFLICT` (409), `VALIDATION_ERROR` (422), `RATE_LIMITED` (429), `INTERNAL_ERROR` y `STORAGE_UNAVAILABLE` (500).
+      parameters:
+        - { $ref: '#/components/parameters/HandoffId' }
+        - { $ref: '#/components/parameters/ActorRequired' }
+        - { $ref: '#/components/parameters/IdempotencyKeyOptional' }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HandoffCancelRequest' }
+            example: { cancelReason: VISITOR_DECLINED }
+      responses:
+        '200':
+          description: Relevo cancelado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HandoffResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /robots/{id}/failure:
+    post:
+      tags: [Robots]
+      operationId: reportRobotFailure
+      summary: Registra la falla de un robot y solicita el relevo de sus visitas abiertas
+      description: |
+        Deja el robot en `FAULT` y crea un relevo por cada visita abierta suya. Idempotente y reanudable. Solo el propio robot o un operador lo declaran: un robot no reporta la falla de otro. El cuerpo es estricto.
+        Errores: `IDEMPOTENCY_KEY_REQUIRED` y `BAD_REQUEST` (400), `UNAUTHENTICATED` (401, solo si se activa el token de robot), `ACTOR_NOT_ALLOWED` (403), `ROBOT_NOT_FOUND` (404),
+        `VERSION_CONFLICT` (409), `VALIDATION_ERROR` e `IDEMPOTENCY_KEY_REUSED` (422), `RATE_LIMITED` (429), `INTERNAL_ERROR` y `STORAGE_UNAVAILABLE` (500).
+      parameters:
+        - { $ref: '#/components/parameters/RobotId' }
+        - { $ref: '#/components/parameters/IdempotencyKeyRequired' }
+        - { $ref: '#/components/parameters/ActorRequired' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RobotFailureRequest' }
+            example: { code: MOTOR_FAULT, lastKnownPoint: Corredor norte }
+      responses:
+        '200':
+          description: Falla registrada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RobotFailureResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  securitySchemes:
+    robotToken:
+      type: http
+      scheme: bearer
+      description: |
+        Token opcional de servidor (`CERBERUS_ROBOT_TOKEN`) para los endpoints que llama el robot real: `POST /recognition/events`, `POST /access/verify` y `POST /robots/{id}/failure`.
+        Sin la variable, la API no lo exige; con ella, la ausencia o invalidez del token es 401. Un valor definido pero vacío deniega todo. El modo demostración del navegador corre sin token: es solo una demostración y nunca debe recibirlo.
+
+  parameters:
+    IdempotencyKeyRequired:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Clave de idempotencia (de 8 a 128 caracteres). Misma clave y mismo cuerpo repiten la respuesta.
+      schema: { type: string, minLength: 8, maxLength: 128 }
+    IdempotencyKeyOptional:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string, minLength: 8, maxLength: 128 }
+    ActorRequired:
+      name: X-Demo-Actor
+      in: header
+      required: true
+      description: Identificador del actor en el directorio (por ejemplo `V-209`, `U-02`, `R1`, `O-01`). Declarativo y no verificable.
+      schema: { type: string, minLength: 2, maxLength: 20 }
+    ActorOptional:
+      name: X-Demo-Actor
+      in: header
+      required: false
+      description: Identificador del actor en el directorio. Declarativo y no verificable.
+      schema: { type: string, minLength: 2, maxLength: 20 }
+    PersonId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, examples: [V-201] }
+    InvitationId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, examples: [inv-b82e51d0] }
+    VisitId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, examples: [vis-7f3a9c21] }
+    HandoffId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, examples: [hof-4d1b02aa] }
+    RobotId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, examples: [R2] }
+
+  responses:
+    BadRequest:
+      description: Petición mal formada o falta una cabecera obligatoria (`BAD_REQUEST`, `IDEMPOTENCY_KEY_REQUIRED`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example: { error: { code: IDEMPOTENCY_KEY_REQUIRED, message: Falta la cabecera Idempotency-Key. } }
+    Unauthorized:
+      description: Falta o es inválido el token de robot (`UNAUTHENTICATED`). Solo si el servidor define `CERBERUS_ROBOT_TOKEN`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example: { error: { code: UNAUTHENTICATED, message: Se requiere el token de robot. } }
+    Forbidden:
+      description: El actor no puede realizar la acción (`ACTOR_NOT_ALLOWED`, `HOST_NOT_ELIGIBLE`, `RESET_DISABLED`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example: { error: { code: ACTOR_NOT_ALLOWED, message: El actor no es un acompañante elegible. } }
+    NotFound:
+      description: El recurso no existe (`PERSON_NOT_FOUND`, `INVITATION_NOT_FOUND`, `VISIT_NOT_FOUND`, `HANDOFF_NOT_FOUND`, `ROBOT_NOT_FOUND`, `ROUTE_NOT_FOUND`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example: { error: { code: VISIT_NOT_FOUND, message: No existe la visita indicada. } }
+    Conflict:
+      description: Conflicto con el estado actual (`INVALID_TRANSITION`, `VERSION_CONFLICT`, `INVITATION_DUPLICATE`, `INVITATION_DAILY_LIMIT`, `INVITATION_NOT_ACTIVE`, `HANDOFF_ALREADY_OPEN`, `HANDOFF_ALREADY_ACCEPTED`, `HANDOFF_EXPIRED`, `RECEIVER_BUSY`, `ASSIGNEE_BUSY`, `FEEDBACK_ALREADY_SUBMITTED`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            error:
+              code: HANDOFF_ALREADY_ACCEPTED
+              message: Otro acompañante ya aceptó este relevo.
+              details: { handoffId: hof-4d1b02aa, toId: U-02 }
+    Unprocessable:
+      description: Datos inválidos o regla de negocio incumplida (`VALIDATION_ERROR`, `INVITATION_DATE_IN_PAST`, `IDEMPOTENCY_KEY_REUSED`, `VISITOR_ACCEPTANCE_REQUIRED`, `ESCORT_NOT_ALLOWED`, `REVIEW_NOT_CONFIRMABLE`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: El cuerpo no cumple el contrato.
+              details: { fields: { 'guest.fullName': Es obligatorio. } }
+    TooManyRequests:
+      description: Límite de tasa superado (`RATE_LIMITED`).
+      headers:
+        Retry-After:
+          description: Segundos hasta que se renueva la ventana.
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example: { error: { code: RATE_LIMITED, message: Demasiadas peticiones. } }
+    InternalError:
+      description: Error interno (`INTERNAL_ERROR`, `STORAGE_UNAVAILABLE`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example: { error: { code: STORAGE_UNAVAILABLE, message: El almacenamiento no está disponible. } }
+
+  schemas:
+    ErrorCode:
+      type: string
+      description: Códigos estables de error. Forman parte del contrato.
+      enum:
+        - BAD_REQUEST
+        - IDEMPOTENCY_KEY_REQUIRED
+        - UNAUTHENTICATED
+        - ACTOR_NOT_ALLOWED
+        - HOST_NOT_ELIGIBLE
+        - RESET_DISABLED
+        - ROUTE_NOT_FOUND
+        - PERSON_NOT_FOUND
+        - INVITATION_NOT_FOUND
+        - PASS_NOT_FOUND
+        - VISIT_NOT_FOUND
+        - HANDOFF_NOT_FOUND
+        - ROBOT_NOT_FOUND
+        - INVITATION_DUPLICATE
+        - INVITATION_DAILY_LIMIT
+        - INVITATION_NOT_ACTIVE
+        - INVALID_TRANSITION
+        - VERSION_CONFLICT
+        - HANDOFF_ALREADY_OPEN
+        - HANDOFF_ALREADY_ACCEPTED
+        - HANDOFF_EXPIRED
+        - RECEIVER_BUSY
+        - ASSIGNEE_BUSY
+        - FEEDBACK_ALREADY_SUBMITTED
+        - PAYLOAD_TOO_LARGE
+        - UNSUPPORTED_MEDIA_TYPE
+        - VALIDATION_ERROR
+        - INVITATION_DATE_IN_PAST
+        - IDEMPOTENCY_KEY_REUSED
+        - VISITOR_ACCEPTANCE_REQUIRED
+        - ESCORT_NOT_ALLOWED
+        - REVIEW_NOT_CONFIRMABLE
+        - RATE_LIMITED
+        - INTERNAL_ERROR
+        - STORAGE_UNAVAILABLE
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { $ref: '#/components/schemas/ErrorCode' }
+            message: { type: string }
+            details:
+              type: object
+              additionalProperties: true
+
+    Category:
+      type: string
+      enum: [VIP, REGULAR, GUEST, STAFF, EXTERNAL]
+    PersonRole:
+      type: string
+      enum: [MEMBER, STAFF, EXTERNAL, USHER, ROBOT, OPERATOR]
+    InvitationState:
+      type: string
+      enum: [ACTIVE, CANCELLED, USED, EXPIRED]
+    VisitState:
+      type: string
+      enum: [EXPECTED, IDENTIFYING, VERIFIED, ORIENTING, IN_PROGRESS, WAITING_HANDOFF, MANUAL_REVIEW, FAILED, CLOSED]
+    HandoffState:
+      type: string
+      enum: [REQUESTED, ACCEPTED, CONTEXT_TRANSFERRED, CONFIRMED, EXPIRED, CANCELLED]
+    HandoffReason:
+      type: string
+      description: Críticos (mantienen la visita en espera si el relevo se cancela o vence) son `ROBOT_FAILURE`, `NETWORK_LOSS` y `LOW_BATTERY`.
+      enum: [ROBOT_FAILURE, NETWORK_LOSS, LOW_BATTERY, VISITOR_PREFERENCE, OPERATIONAL]
+    HandoffCancelReason:
+      type: string
+      enum: [VISITOR_DECLINED, RECEIVER_UNAVAILABLE, SUPERSEDED, OPERATOR, VISIT_CLOSED, VISIT_ABORTED]
+    ManualReviewReason:
+      type: string
+      enum: [FACE_UNKNOWN, FACE_ERROR, LOW_CONFIDENCE, NO_EVIDENCE, CANDIDATE_NOT_FOUND, FACE_REGISTRY_MISMATCH, MEMBERSHIP_EXPIRED, STAFF_OUTSIDE_SHIFT, DUAL_ROLE]
+    DenialReason:
+      type: string
+      enum: [MEMBERSHIP_SUSPENDED, EXTERNAL_PERMIT_OUTSIDE_WINDOW, QR_EXPIRED, QR_NOT_YET_VALID, QR_ALREADY_USED, QR_REVOKED, QR_UNKNOWN]
+    Evidence:
+      type: string
+      enum: [MEMBERSHIP_ACTIVE, STAFF_SHIFT_ACTIVE, EXTERNAL_PERMIT_ACTIVE, INVITATION_ACTIVE, INVITATION_QR_VALID, HUMAN_ATTESTATION]
+
+    Health:
+      type: object
+      required: [status, contract, storage, demo, clock]
+      properties:
+        status: { type: string, enum: [ok] }
+        contract: { type: string, enum: [v1] }
+        storage: { type: string, enum: [memory, redis, browser], description: "`browser` es el modo demo local (localStorage)." }
+        demo: { type: boolean }
+        clock:
+          type: object
+          required: [now, timezone]
+          properties:
+            now: { type: string, format: date-time }
+            timezone: { type: string, enum: [America/Bogota] }
+        commit: { type: [string, 'null'], description: "Commit desplegado en el servidor (ausente en el modo demo del navegador)." }
+
+    DemoResetRequest:
+      type: object
+      properties:
+        now:
+          type: string
+          format: date-time
+          description: Instante inicial del reloj de demostración. Por defecto, sábado 2026-10-24 09:00 -05:00.
+    DemoResetResponse:
+      type: object
+      required: [status, clock, demoInvitation]
+      properties:
+        status: { type: string, enum: [reset] }
+        clock:
+          type: object
+          required: [now]
+          properties:
+            now: { type: string, format: date-time }
+        demoInvitation:
+          description: Invitación activa de ejemplo (anfitriona V-209, invitada Valentina Restrepo) en la fecha del reloj.
+          $ref: '#/components/schemas/Invitation'
+
+    Membership:
+      type: object
+      required: [tier, status, validTo]
+      properties:
+        tier: { type: string, enum: [VIP, REGULAR] }
+        status: { type: string, enum: [ACTIVE, SUSPENDED] }
+        validTo: { type: string, format: date }
+    Shift:
+      type: object
+      required: [date, from, to]
+      properties:
+        date: { type: string, format: date }
+        from: { type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$' }
+        to: { type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$' }
+    StaffInfo:
+      type: object
+      required: [department, shifts]
+      properties:
+        department: { type: string }
+        shifts:
+          type: array
+          items: { $ref: '#/components/schemas/Shift' }
+    ExternalPermit:
+      type: object
+      required: [daysOfWeek, from, to, validFrom, validTo]
+      properties:
+        daysOfWeek:
+          type: array
+          items: { type: string, enum: [MON, TUE, WED, THU, FRI, SAT, SUN] }
+        from: { type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$' }
+        to: { type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$' }
+        validFrom: { type: string, format: date }
+        validTo: { type: string, format: date }
+    ExternalInfo:
+      type: object
+      required: [company, orderCode, responsibleId, permit]
+      properties:
+        company: { type: string }
+        orderCode: { type: string }
+        responsibleId: { type: string }
+        permit: { $ref: '#/components/schemas/ExternalPermit' }
+    RobotInfo:
+      type: object
+      required: [role, canEscort, status]
+      properties:
+        role: { type: string, enum: [RECEPTION, ESCORT] }
+        canEscort: { type: boolean }
+        status: { type: string, enum: [OK, FAULT] }
+    Person:
+      type: object
+      required: [id, displayName, roles, defaultDestination]
+      properties:
+        id: { type: string, examples: [V-201] }
+        displayName: { type: string }
+        roles:
+          type: array
+          items: { $ref: '#/components/schemas/PersonRole' }
+        membership: { $ref: '#/components/schemas/Membership' }
+        staff: { $ref: '#/components/schemas/StaffInfo' }
+        external: { $ref: '#/components/schemas/ExternalInfo' }
+        robot: { $ref: '#/components/schemas/RobotInfo' }
+        defaultDestination: { type: [string, 'null'] }
+        preferences:
+          type: array
+          description: Solo en el detalle (`GET /people/{id}`).
+          items: { type: string }
+    PersonList:
+      type: object
+      required: [items, count]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Person' }
+        count: { type: integer }
+
+    Activity:
+      type: object
+      required: [id, title, location, startsAt, endsAt, audience]
+      properties:
+        id: { type: string, examples: [act-001] }
+        title: { type: string }
+        location: { type: string }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: string, format: date-time }
+        audience:
+          type: array
+          items: { $ref: '#/components/schemas/Category' }
+    ActivityList:
+      type: object
+      required: [items, count]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Activity' }
+        count: { type: integer }
+
+    Guest:
+      type: object
+      required: [fullName]
+      properties:
+        fullName: { type: string, minLength: 2, maxLength: 80 }
+        contact: { type: string, maxLength: 120 }
+        note: { type: string, maxLength: 140 }
+    InvitationWindow:
+      type: object
+      required: [from, to]
+      properties:
+        from: { type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$', examples: ['06:00'] }
+        to: { type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$', examples: ['22:00'] }
+    InvitationCreate:
+      type: object
+      required: [hostId, guest, date]
+      properties:
+        hostId: { type: string }
+        guest: { $ref: '#/components/schemas/Guest' }
+        meetingPoint: { type: string, maxLength: 60 }
+        date: { type: string, format: date }
+        window:
+          description: Por defecto 06:00 a 22:00.
+          $ref: '#/components/schemas/InvitationWindow'
+    Qr:
+      type: object
+      required: [token, validFrom, validTo, usedAt, revokedAt]
+      properties:
+        token:
+          type: string
+          description: Token opaco `nq_` seguido de 128 bits en base64url (22 caracteres). No contiene datos personales.
+          pattern: '^nq_[A-Za-z0-9_-]{22}$'
+        validFrom: { type: string, format: date-time }
+        validTo: { type: string, format: date-time }
+        usedAt: { type: [string, 'null'], format: date-time }
+        revokedAt: { type: [string, 'null'], format: date-time }
+    Invitation:
+      type: object
+      required: [id, hostId, guest, meetingPoint, date, window, state, qr, visitId, createdAt, cancelledAt]
+      properties:
+        id: { type: string, examples: [inv-b82e51d0] }
+        hostId: { type: string }
+        guest:
+          allOf:
+            - $ref: '#/components/schemas/Guest'
+            - type: object
+              required: [ref]
+              properties:
+                ref: { type: string, examples: [G-3c91aa07] }
+        meetingPoint: { type: [string, 'null'] }
+        date: { type: string, format: date }
+        window: { $ref: '#/components/schemas/InvitationWindow' }
+        state:
+          description: Estado efectivo; `EXPIRED` se deriva al leer.
+          $ref: '#/components/schemas/InvitationState'
+        qr: { $ref: '#/components/schemas/Qr' }
+        visitId: { type: string }
+        createdAt: { type: string, format: date-time }
+        cancelledAt: { type: [string, 'null'], format: date-time }
+    PassState:
+      type: string
+      description: Estado efectivo del pase; `NOT_YET_VALID` es un pase activo cuya ventana aún no abre.
+      enum: [ACTIVE, USED, EXPIRED, CANCELLED, NOT_YET_VALID]
+    Pass:
+      type: object
+      required: [guestFirstName, hostShortName, meetingPoint, date, window, state, qr]
+      properties:
+        guestFirstName: { type: string, examples: [Sebastián] }
+        hostShortName: { type: string, description: Nombre de pila del anfitrión., examples: [Camila] }
+        meetingPoint: { type: [string, 'null'] }
+        date: { type: string, format: date }
+        window: { $ref: '#/components/schemas/InvitationWindow' }
+        state: { $ref: '#/components/schemas/PassState' }
+        qr:
+          type: object
+          required: [token, validFrom, validTo]
+          properties:
+            token: { type: string, pattern: '^nq_[A-Za-z0-9_-]{22}$' }
+            validFrom: { type: string, format: date-time }
+            validTo: { type: string, format: date-time }
+    InvitationList:
+      type: object
+      required: [items, count]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Invitation' }
+        count: { type: integer }
+
+    AccessVerifyRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token: { type: string, minLength: 1, maxLength: 128 }
+        visitId:
+          type: string
+          description: Visita en `MANUAL_REVIEW` sin invitación que se fusiona con la visita esperada de la invitación.
+    AccessGranted:
+      type: object
+      required: [decision, visit, invitation]
+      properties:
+        decision: { type: string, const: GRANTED }
+        visit: { $ref: '#/components/schemas/Visit' }
+        invitation: { $ref: '#/components/schemas/Invitation' }
+    AccessDenied:
+      type: object
+      required: [decision, reason]
+      properties:
+        decision: { type: string, const: DENIED }
+        reason: { $ref: '#/components/schemas/DenialReason' }
+    AccessVerifyResponse:
+      oneOf:
+        - $ref: '#/components/schemas/AccessGranted'
+        - $ref: '#/components/schemas/AccessDenied'
+      discriminator:
+        propertyName: decision
+        mapping:
+          GRANTED: '#/components/schemas/AccessGranted'
+          DENIED: '#/components/schemas/AccessDenied'
+
+    EventSource:
+      type: object
+      required: [kind, id]
+      properties:
+        kind:
+          type: string
+          enum: [ROBOT, SIMULATOR]
+          description: "`SIMULATOR` se guarda como `simulated: true` y la interfaz lo rotula."
+        id: { type: string, description: Identificador del robot o de la pantalla simuladora., examples: [R1] }
+    FaceMatch:
+      type: object
+      required: [status, classHint]
+      properties:
+        status: { type: string, const: MATCH }
+        classHint: { type: string, enum: [MEMBER, NON_MEMBER] }
+        candidateId: { type: string }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+    FaceUnknown:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, const: UNKNOWN }
+    FaceError:
+      type: object
+      required: [status, code]
+      properties:
+        status: { type: string, const: ERROR }
+        code: { type: string, maxLength: 60 }
+    FaceSignal:
+      oneOf:
+        - $ref: '#/components/schemas/FaceMatch'
+        - $ref: '#/components/schemas/FaceUnknown'
+        - $ref: '#/components/schemas/FaceError'
+      discriminator:
+        propertyName: status
+        mapping:
+          MATCH: '#/components/schemas/FaceMatch'
+          UNKNOWN: '#/components/schemas/FaceUnknown'
+          ERROR: '#/components/schemas/FaceError'
+    RecognitionEventRequest:
+      type: object
+      additionalProperties: false
+      required: [source, face]
+      properties:
+        source: { $ref: '#/components/schemas/EventSource' }
+        face: { $ref: '#/components/schemas/FaceSignal' }
+        evidence:
+          type: object
+          properties:
+            qrToken: { type: string, minLength: 1, maxLength: 128 }
+        observedAt: { type: string, format: date-time }
+    Confirmed:
+      type: object
+      required: [state, category, evidence, suggestedDestination]
+      properties:
+        state: { type: string, const: CONFIRMED }
+        category: { $ref: '#/components/schemas/Category' }
+        evidence:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/Evidence' }
+        suggestedDestination: { type: [string, 'null'] }
+    ManualReview:
+      type: object
+      required: [state, reason]
+      properties:
+        state: { type: string, const: MANUAL_REVIEW }
+        reason: { $ref: '#/components/schemas/ManualReviewReason' }
+    Denied:
+      type: object
+      required: [state, reason]
+      properties:
+        state: { type: string, const: DENIED }
+        reason: { $ref: '#/components/schemas/DenialReason' }
+    Classification:
+      oneOf:
+        - $ref: '#/components/schemas/Confirmed'
+        - $ref: '#/components/schemas/ManualReview'
+        - $ref: '#/components/schemas/Denied'
+      discriminator:
+        propertyName: state
+        mapping:
+          CONFIRMED: '#/components/schemas/Confirmed'
+          MANUAL_REVIEW: '#/components/schemas/ManualReview'
+          DENIED: '#/components/schemas/Denied'
+    RecognitionRecord:
+      type: object
+      required: [source, simulated, face, confidence, observedAt]
+      properties:
+        source: { $ref: '#/components/schemas/EventSource' }
+        simulated: { type: boolean }
+        face: { $ref: '#/components/schemas/FaceSignal' }
+        confidence: { type: [number, 'null'] }
+        observedAt: { type: string, format: date-time }
+    VisitorSummary:
+      type: object
+      required: [ref, personId, displayName]
+      properties:
+        ref: { type: [string, 'null'] }
+        personId: { type: [string, 'null'] }
+        displayName: { type: string }
+    Visit:
+      type: object
+      required: [id, state, category, visitor, destination, ownerId, resumeState, classification, recognition, invitationId, hostName, openHandoffId, arrivedAt, closedAt, closeReason, failureReason, feedbackSubmitted, createdAt, updatedAt, version]
+      properties:
+        id: { type: string, examples: [vis-7f3a9c21] }
+        state: { $ref: '#/components/schemas/VisitState' }
+        category:
+          oneOf:
+            - $ref: '#/components/schemas/Category'
+            - type: 'null'
+        visitor: { $ref: '#/components/schemas/VisitorSummary' }
+        destination: { type: [string, 'null'] }
+        ownerId:
+          type: [string, 'null']
+          description: Responsable actual o, si la visita terminó, el último. Solo cambia en `ASSIGN_ESCORT` y en la confirmación de un relevo.
+        resumeState:
+          oneOf:
+            - $ref: '#/components/schemas/VisitState'
+            - type: 'null'
+        classification:
+          oneOf:
+            - $ref: '#/components/schemas/Classification'
+            - type: 'null'
+        recognition:
+          oneOf:
+            - $ref: '#/components/schemas/RecognitionRecord'
+            - type: 'null'
+        invitationId: { type: [string, 'null'] }
+        hostName:
+          type: [string, 'null']
+          description: Nombre de pila del anfitrión del invitado, para que el quiosco diga quién lo espera; `null` si la visita no nació de una invitación. No da acceso a la invitación ni a su token.
+        openHandoffId: { type: [string, 'null'] }
+        arrivedAt: { type: [string, 'null'], format: date-time }
+        closedAt: { type: [string, 'null'], format: date-time }
+        closeReason:
+          type: [string, 'null']
+          enum: [EXIT, INVITATION_CANCELLED, NO_SHOW, MERGED, DAY_ROLLOVER, null]
+        failureReason:
+          type: [string, 'null']
+          description: Motivo de denegación, `REVIEW_DENIED` o `ABORTED_BY_OPERATOR`.
+          enum:
+            - MEMBERSHIP_SUSPENDED
+            - EXTERNAL_PERMIT_OUTSIDE_WINDOW
+            - QR_EXPIRED
+            - QR_NOT_YET_VALID
+            - QR_ALREADY_USED
+            - QR_REVOKED
+            - QR_UNKNOWN
+            - REVIEW_DENIED
+            - ABORTED_BY_OPERATOR
+            - null
+        feedbackSubmitted: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        version: { type: integer, minimum: 1 }
+    VisitList:
+      type: object
+      required: [items, count]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Visit' }
+        count: { type: integer }
+    RecognitionEventResponse:
+      type: object
+      required: [visit, classification, matchedOpenVisit]
+      properties:
+        visit: { $ref: '#/components/schemas/Visit' }
+        classification: { $ref: '#/components/schemas/Classification' }
+        matchedOpenVisit: { type: boolean }
+
+    ResolveReview:
+      type: object
+      required: [event, decision]
+      properties:
+        event: { type: string, const: RESOLVE_REVIEW }
+        decision: { type: string, enum: [CONFIRM, DENY] }
+        personId:
+          type: string
+          description: Persona que el humano comprobó. Obligatorio con `CONFIRM`.
+        purpose:
+          type: string
+          enum: [MEMBER, STAFF]
+          description: Motivo de la llegada cuando el motivo de revisión es `DUAL_ROLE`.
+        expectedVersion: { type: integer, minimum: 1 }
+    StartOrientation:
+      type: object
+      required: [event]
+      properties:
+        event: { type: string, const: START_ORIENTATION }
+        destination: { type: string, maxLength: 60 }
+        expectedVersion: { type: integer, minimum: 1 }
+    AssignEscort:
+      type: object
+      required: [event, assigneeId, visitorAccepted]
+      properties:
+        event: { type: string, const: ASSIGN_ESCORT }
+        assigneeId:
+          type: string
+          description: Identificador de un acompañante elegible, `SELF` (el responsable actual acompaña) o `NONE` (sin acompañante, solo desde la orientación y nunca para un externo; el responsable conserva la visita y `visitorAccepted` se ignora).
+        visitorAccepted: { type: boolean }
+        expectedVersion: { type: integer, minimum: 1 }
+    Arrive:
+      type: object
+      required: [event]
+      properties:
+        event: { type: string, const: ARRIVE }
+        expectedVersion: { type: integer, minimum: 1 }
+    Abort:
+      type: object
+      required: [event]
+      properties:
+        event: { type: string, const: ABORT }
+        reason: { type: string, maxLength: 140 }
+        expectedVersion: { type: integer, minimum: 1 }
+    AdvanceRequest:
+      oneOf:
+        - $ref: '#/components/schemas/ResolveReview'
+        - $ref: '#/components/schemas/StartOrientation'
+        - $ref: '#/components/schemas/AssignEscort'
+        - $ref: '#/components/schemas/Arrive'
+        - $ref: '#/components/schemas/Abort'
+      discriminator:
+        propertyName: event
+        mapping:
+          RESOLVE_REVIEW: '#/components/schemas/ResolveReview'
+          START_ORIENTATION: '#/components/schemas/StartOrientation'
+          ASSIGN_ESCORT: '#/components/schemas/AssignEscort'
+          ARRIVE: '#/components/schemas/Arrive'
+          ABORT: '#/components/schemas/Abort'
+    CloseRequest:
+      type: object
+      properties:
+        method:
+          type: string
+          enum: [FACE, QR, MANUAL]
+          description: Cómo se confirmó la identidad al salir.
+        expectedVersion: { type: integer, minimum: 1 }
+
+    FeedbackRequest:
+      type: object
+      description: Debe incluir al menos un campo de calificación o de comentario. Sin audio.
+      properties:
+        robotRating: { type: integer, minimum: 1, maximum: 5 }
+        robotComment: { type: string, maxLength: 300 }
+        clubRating: { type: integer, minimum: 1, maximum: 5 }
+        clubComment: { type: string, maxLength: 300 }
+    Feedback:
+      allOf:
+        - $ref: '#/components/schemas/FeedbackRequest'
+        - type: object
+          required: [visitId, createdAt]
+          properties:
+            visitId: { type: string }
+            createdAt: { type: string, format: date-time }
+
+    HandoffCreate:
+      type: object
+      required: [visitId, reason]
+      properties:
+        visitId: { type: string }
+        reason: { $ref: '#/components/schemas/HandoffReason' }
+        preferredToId: { type: string }
+        note: { type: string, maxLength: 140 }
+    HandoffCancelRequest:
+      type: object
+      properties:
+        cancelReason: { $ref: '#/components/schemas/HandoffCancelReason' }
+    HandoffSummary:
+      type: object
+      required: [visitorName, category, destination, lastKnownPoint]
+      properties:
+        visitorName: { type: string, description: Solo el nombre de pila y la inicial del apellido. }
+        category: { $ref: '#/components/schemas/Category' }
+        destination: { type: [string, 'null'] }
+        lastKnownPoint: { type: [string, 'null'] }
+    Handoff:
+      type: object
+      required: [id, visitId, state, reason, fromId, toId, preferredToId, requestedBy, note, summary, createdAt, expiresAt, acceptedAt, contextTransferredAt, confirmedAt, cancelledAt, cancelReason, version]
+      properties:
+        id: { type: string, examples: [hof-4d1b02aa] }
+        visitId: { type: string }
+        state: { $ref: '#/components/schemas/HandoffState' }
+        reason: { $ref: '#/components/schemas/HandoffReason' }
+        fromId: { type: string }
+        toId: { type: [string, 'null'] }
+        preferredToId: { type: [string, 'null'] }
+        requestedBy: { type: string }
+        note: { type: [string, 'null'] }
+        summary: { $ref: '#/components/schemas/HandoffSummary' }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        acceptedAt: { type: [string, 'null'], format: date-time }
+        contextTransferredAt: { type: [string, 'null'], format: date-time }
+        confirmedAt: { type: [string, 'null'], format: date-time }
+        cancelledAt: { type: [string, 'null'], format: date-time }
+        cancelReason:
+          oneOf:
+            - $ref: '#/components/schemas/HandoffCancelReason'
+            - type: 'null'
+        version: { type: integer, minimum: 1 }
+    HandoffResult:
+      type: object
+      required: [handoff, visit]
+      properties:
+        handoff: { $ref: '#/components/schemas/Handoff' }
+        visit: { $ref: '#/components/schemas/Visit' }
+    HandoffList:
+      type: object
+      required: [items, count]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Handoff' }
+        count: { type: integer }
+    HandoffContext:
+      type: object
+      required: [visitId, visitor, category, destination, preferences, progress, evidence, note]
+      properties:
+        visitId: { type: string }
+        visitor: { $ref: '#/components/schemas/VisitorSummary' }
+        category: { $ref: '#/components/schemas/Category' }
+        destination: { type: [string, 'null'] }
+        preferences:
+          type: array
+          items: { type: string }
+        progress:
+          type: object
+          required: [state, arrivedAt, lastKnownPoint]
+          properties:
+            state: { $ref: '#/components/schemas/VisitState' }
+            arrivedAt: { type: [string, 'null'], format: date-time }
+            lastKnownPoint: { type: [string, 'null'] }
+        evidence:
+          type: array
+          items: { $ref: '#/components/schemas/Evidence' }
+        note: { type: [string, 'null'] }
+    HandoffContextResult:
+      type: object
+      required: [handoff, context]
+      properties:
+        handoff: { $ref: '#/components/schemas/Handoff' }
+        context: { $ref: '#/components/schemas/HandoffContext' }
+
+    RobotFailureRequest:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code:
+          type: string
+          enum: [MOTOR_FAULT, NAVIGATION_BLOCKED, OBSTACLE, LOW_BATTERY, NETWORK_LOSS]
+        lastKnownPoint: { type: string, maxLength: 60 }
+    RobotFailureResponse:
+      type: object
+      required: [robot, handoffs]
+      properties:
+        robot:
+          type: object
+          required: [id, status]
+          properties:
+            id: { type: string }
+            status: { type: string, enum: [FAULT] }
+        handoffs:
+          type: array
+          items: { $ref: '#/components/schemas/Handoff' }

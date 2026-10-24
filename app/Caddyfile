@@ -1,0 +1,4 @@
+# TLS automático (Let's Encrypt) para el dominio de DOMAIN; reenvía todo a la API.
+{$DOMAIN} {
+	reverse_proxy api:8080
+}
