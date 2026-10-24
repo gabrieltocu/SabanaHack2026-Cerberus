@@ -16,6 +16,10 @@ Sabana Hack 2026 · reto "El reto de Cerberus" (N Club) · robot AgiBot X2 Ultra
 > pregunta solo cuando duda y, si la evidencia no alcanza o se contradice, **llama a recepcion: nunca abre
 > acceso por defecto**.
 
+## Link Presentación:
+[https://canva.link/cxd4nircftk3omf](https://canva.link/cxd4nircftk3omf)
+
+
 ## El simulador (lo principal)
 
 ```bash
